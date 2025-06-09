@@ -1,0 +1,45 @@
+&CONTROL
+   calculation      = 'scf'
+   verbosity        = 'high'
+   outdir           = '/home/ayush/personal/material_study/out/mp-149_si_p_doping'
+   prefix           = 'si_p'
+   pseudo_dir       = '/home/ayush/personal/material_study/pseudos'
+/
+&SYSTEM
+   nat              = 2
+   ecutwfc          = 30
+   ecutrho          = 240
+   occupations      = 'smearing'
+   degauss          = 0.01
+   smearing         = 'gaussian'
+   ntyp             = 2
+   ibrav            = 0
+/
+&ELECTRONS
+   conv_thr         = 1e-08
+   mixing_beta      = 0.4
+/
+&IONS
+/
+&CELL
+/
+&FCP
+/
+&RISM
+/
+ATOMIC_SPECIES
+P 30.973761998 P.UPF
+Si 28.085 Si.UPF
+
+K_POINTS automatic
+4 4 4  0 0 0
+
+CELL_PARAMETERS angstrom
+3.33357299720049 0.00000000000000 1.92463899810907
+1.11119099928014 3.14292399874994 1.92463899925426
+0.00000000000000 0.00000000000000 3.84927800000000
+
+ATOMIC_POSITIONS angstrom
+P 3.8891684969 2.7500584989 6.7362364977  
+Si 0.5555954996 0.3928654998 0.9623194997  
+

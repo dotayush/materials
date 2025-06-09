@@ -1,0 +1,8 @@
+&DOS
+prefix = 'si_p'
+outdir = '/home/ayush/personal/material_study/out/mp-149_si_p_doping'
+fildos = 'dos.out'
+emin = -10.000000
+emax = 10.000000
+DeltaE = 0.010000
+/

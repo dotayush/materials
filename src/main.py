@@ -1,15 +1,20 @@
 import os
+
+
 import matplotlib
 import numpy as np
 import pandas as pd
+from typing import Union
 from ase.atoms import Atoms
-from ase.calculators.espresso import Espresso
+from ase.calculators.espresso import Espresso, EspressoProfile
 from ase.io import read, write
 from dotenv import load_dotenv
 from mp_api.client import MPRester
 from pymatgen.analysis.interfaces.substrate_analyzer import SubstrateAnalyzer
 from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+from pymatgen.io.pwscf import PWOutput
+from pymatgen.io.ase import AseAtomsAdaptor
 
 _ = load_dotenv()
 MP_API_KEY = os.getenv("MP_API_KEY")
@@ -17,6 +22,8 @@ mpr = MPRester(MP_API_KEY)
 matplotlib.use("Qt5Agg")
 SAVED_STRUCTURES_DIR = os.path.join(os.getcwd(), "saved_structures")
 PSUEDOPOTENTIALS_DIR = os.path.join(os.getcwd(), "pseudos")
+profile = EspressoProfile(command="mpirun -np 4 pw.x", pseudo_dir=PSUEDOPOTENTIALS_DIR)
+QEInputType = dict[str, Union[str, float, int]]
 
 
 def setup_output_project(project_name: str) -> str:
@@ -25,6 +32,41 @@ def setup_output_project(project_name: str) -> str:
     print(f"[Info] Setting up project directory: {project_dir}")
     os.makedirs(project_dir, exist_ok=True)
     return project_dir
+
+
+def print_structure(structures, title=None):
+    structure_data = []
+    for structure in structures:
+        sga = SpacegroupAnalyzer(structure)
+        conventional = sga.get_conventional_standard_structure()
+        # lattice_pos: a, b, c, alpha, beta, gamma
+        # reciprocal_lattice_pos: a_r, b_r, c_r, alpha_r, beta_r, gamma_r
+        if isinstance(structure, Structure):
+            structure_data.append(
+                {
+                    "formula": structure.composition.formula,
+                    "space_group": sga.get_space_group_symbol(),
+                    "space_group_number": sga.get_space_group_number(),
+                    "a": conventional.lattice.a,
+                    "b": conventional.lattice.b,
+                    "c": conventional.lattice.c,
+                    "alpha": conventional.lattice.alpha,
+                    "beta": conventional.lattice.beta,
+                    "gamma": conventional.lattice.gamma,
+                    "a_r": conventional.lattice.reciprocal_lattice.a,
+                    "b_r": conventional.lattice.reciprocal_lattice.b,
+                    "c_r": conventional.lattice.reciprocal_lattice.c,
+                    "alpha_r": conventional.lattice.reciprocal_lattice.alpha,
+                    "beta_r": conventional.lattice.reciprocal_lattice.beta,
+                    "gamma_r": conventional.lattice.reciprocal_lattice.gamma,
+                    "density": [structure.density],
+                },
+            )
+
+    if title:
+        print(f"\n{title}\n{'-' * 30}")
+    print(pd.DataFrame(structure_data))
+    print("-" * 30 + "\n")
 
 
 def get_strucuture_from_id(mp_id: str) -> Structure:
@@ -73,7 +115,7 @@ def create_doped_structure(
     host_element,
     dopant_element,
     dopant_concentration,
-    min_atoms=1,
+    min_atoms=2,
 ):
     """Create doped structure with specified concentration in a supercell"""
     num_host = sum(
@@ -105,133 +147,155 @@ def create_doped_structure(
         :n_dopants
     ]:  # replace the first n_dopants host sites with the dopant_element
         supercell.replace(idx, dopant_element)
-    return supercell  # return the doped supercell structure
+    return (
+        supercell.get_primitive_structure()
+    )  # return the primitive structure of the doped supercell for further calculations
 
 
-def generate_espresso_input(cif_file_path: str, calculation_type: str = "scf"):
-    """Convert a pymatgen cif file to a Quantum ESPRESSO input file."""
-    atoms = read(cif_file_path)
+def generate_espresso_input(
+    struct: Structure, out_dir: str, prefix: str, kpts=None, nbnd=None
+):
+    """Generate Quantum ESPRESSO input files for a given structure.
+    This includes SCF, NSCF, and DOS input files."""
+    atoms = AseAtomsAdaptor.get_atoms(struct)
     if not isinstance(atoms, Atoms):
-        raise ValueError(
-            f"Expected an ASE Atoms object, but got {type(atoms)}. "
-            "Ensure the CIF file is correctly formatted."
-        )
-    parent_path = os.path.dirname(cif_file_path)
+        raise ValueError(f"Expected a single Atoms object, but got {type(atoms)}")
+    pseudopotentials = {s: f"{s}.UPF" for s in set(atoms.get_chemical_symbols())}
+    nat = len(atoms)
 
-    # generate the pseudopotentials dictionary
-    pseudopotentials = {}
-    for symbol in set(atoms.get_chemical_symbols()):
-        pseudopotential_file = f"{symbol}.UPF"  # default pseudopotential file name
-        pseudopotentials[symbol] = pseudopotential_file
-
-    print(f"[Info] Using pseudopotentials: {pseudopotentials}")
-
-    # generate the Quantum ESPRESSO input
-    input_data = {
-        "control": {
-            "calculation": calculation_type,
-            "prefix": "si_p",
-            "pseudo_dir": PSUEDOPOTENTIALS_DIR,
-            "outdir": parent_path,
-            "verbosity": "high",
-        },
-        "system": {
-            "ecutwfc": 30,
-            "ecutrho": 240,
-            "occupations": "smearing",
-            "smearing": "gaussian",
-            "degauss": 0.01,
-            "nat": len(atoms),
-        },
-        "electrons": {
-            "conv_thr": 1e-8,  # convergence threshold
-            "mixing_beta": 0.4,  # mixing parameter for self-consistent field
-            "electron_maxstep": 80,
-        },
+    # ---- handle SCF input generation ----
+    control: QEInputType = {
+        "calculation": "scf",  # default to SCF calculation
+        "prefix": prefix,  # use the base name of the cif file as prefivx
+        "pseudo_dir": PSUEDOPOTENTIALS_DIR,
+        "outdir": out_dir,
+        "verbosity": "high",
     }
-    print(f"[Info] Using input data: {input_data}")
-
-    calc = Espresso(input_data=input_data, pseudopotentials=pseudopotentials)
-    atoms.set_calculator(calc)
+    system: QEInputType = {
+        "nat": nat,
+        "ecutwfc": 30,
+        "ecutrho": 240,
+        "occupations": "smearing",  # default to smearing for SCF
+        "smearing": "gaussian",  # default smearing type
+        "degauss": 0.01,  # default smearing width
+    }
+    electrons: QEInputType = {
+        "conv_thr": 1e-8,
+        "mixing_beta": 0.4,
+    }
+    input_file = os.path.join(out_dir, "scf.in")
     write(
-        os.path.join(parent_path, "espresso_input.in"),
+        input_file,
         atoms,
         format="espresso-in",
+        pseudopotentials=pseudopotentials,
+        ppdir=PSUEDOPOTENTIALS_DIR,
+        input_data={"control": control, "system": system, "electrons": electrons},
+        kpts=kpts or (4, 4, 4),  # default k-point grid for SCF
     )
+    print(f"[Info] Generated SCF input file at {input_file}")
 
-def print_structure(structures, title=None):
-    structure_data = []
-    for structure in structures:
-        sga = SpacegroupAnalyzer(structure)
-        conventional = sga.get_conventional_standard_structure()
-        # lattice_pos: a, b, c, alpha, beta, gamma
-        # reciprocal_lattice_pos: a_r, b_r, c_r, alpha_r, beta_r, gamma_r
-        if isinstance(structure, Structure):
-            structure_data.append(
-                {
-                    "formula": structure.composition.formula,
-                    "space_group": sga.get_space_group_symbol(),
-                    "space_group_number": sga.get_space_group_number(),
-                    "a": conventional.lattice.a,
-                    "b": conventional.lattice.b,
-                    "c": conventional.lattice.c,
-                    "alpha": conventional.lattice.alpha,
-                    "beta": conventional.lattice.beta,
-                    "gamma": conventional.lattice.gamma,
-                    "a_r": conventional.lattice.reciprocal_lattice.a,
-                    "b_r": conventional.lattice.reciprocal_lattice.b,
-                    "c_r": conventional.lattice.reciprocal_lattice.c,
-                    "alpha_r": conventional.lattice.reciprocal_lattice.alpha,
-                    "beta_r": conventional.lattice.reciprocal_lattice.beta,
-                    "gamma_r": conventional.lattice.reciprocal_lattice.gamma,
-                    "density": [structure.density],
-                },
-            )
+    # ---- handle NSCF input generation ----
+    control.update(
+        {
+            "calculation": "nscf",
+            "restart_mode": "restart",
+        }
+    )
+    system.update(
+        {
+            "occupations": "fixed",  # fixed occupations for NSCF
+            "nbnd": nbnd or 2 * nat,  # number of bands, default to 2 * nat
+        }
+    )
+    input_file = os.path.join(out_dir, "nscf.in")
+    write(
+        input_file,
+        atoms,
+        format="espresso-in",
+        pseudopotentials=pseudopotentials,
+        ppdir=PSUEDOPOTENTIALS_DIR,
+        input_data={"control": control, "system": system, "electrons": electrons},
+        kpts=kpts or (8, 8, 8),  # denser k-point grid for NSCF
+    )
+    print(f"[Info] Generated NSCF input file at {input_file}")
 
-    if title:
-        print(f"\n{title}\n{'-' * 30}")
-    print(pd.DataFrame(structure_data))
+    # ---- handle DOS input generation ----
+    dos_data: QEInputType = {
+        "prefix": prefix,
+        "outdir": out_dir,
+        "fildos": "dos.out",
+        "emin": -10,
+        "emax": 10,
+        "DeltaE": 0.01,
+    }
+    # build dos string
+    dos_str = "\n".join(
+        [
+            f"{key} = '{value}'" if isinstance(value, str) else f"{key} = {value:.6f}"
+            for key, value in dos_data.items()
+        ]
+    )
+    dos_str = f"&DOS\n{dos_str}\n/\n"
+    input_file = os.path.join(out_dir, "dos.in")
+    with open(input_file, "w") as f:
+        f.write(dos_str)
+    print(f"[Info] Generated DOS input file at {input_file}")
+
+    # ---- handle phonon input generation ----
+    phonon_data: QEInputType = {
+        "prefix": prefix,
+        "outdir": out_dir,
+        "fildyn": "dyn.out",
+        "tr2_ph": 1e-14,  # convergence threshold for phonon calculations
+        "nq1": 4,  # number of q-points in the first direction
+        "nq2": 4,  # number of q-points in the second direction
+        "nq3": 4,  # number of q-points in the third direction
+    }
+    # build phonon string
+    phonon_str = "\n".join(
+        [
+            f"{key} = '{value}'" if isinstance(value, str) else f"{key} = {value:.6f}"
+            for key, value in phonon_data.items()
+        ]
+    ).join("ldisp = .true.")  # add ldisp flag for phonon calculations
+    phonon_str = f"&inputph\n{phonon_str}\n/\n"
+    input_file = os.path.join(out_dir, "ph.in")
+    with open(input_file, "w") as f:
+        f.write(phonon_str)
+    print(f"[Info] Generated phonon input file at {input_file}")
+
+
+def generate_doped_si_with_p(project_dir: str, concentration=0.2):
+    save_path = os.path.join(project_dir, "supercell.cif")
+    if not os.path.exists(save_path):
+        si_p = create_doped_structure(
+            get_strucuture_from_id("mp-149"), "Si", "P", concentration
+        )
+        si_p.to(filename=save_path, fmt="cif")
+        print(f"[Info] Saved doped Si structure to {save_path}")
+    else:
+        si_p = Structure.from_file(save_path)
+        print(f"[Info] Loaded existing doped Si structure from {save_path}")
+    return {"structure": si_p, "save_path": save_path}
 
 
 def main():
     project_dir = setup_output_project("mp-149_si_p_doping")
-    si = get_strucuture_from_id("mp-149")
-    print_structure([si], title="Structures of Si")
+    si_p = generate_doped_si_with_p(project_dir, concentration=0.2)
 
-    # compute match
-    # match = substrate_compatibility(gan, si)
-    # if match:
-    #     film_miller = " ".join(map(str, match.film_miller))
-    #     substrate_miller = " ".join(map(str, match.substrate_miller))
-    #     compatibility_struct = [{
-    #         "name": format(
-    #             "{} on {}".format(
-    #                 gan.composition.formula,
-    #                 si.composition.formula,
-    #             )
-    #         ),
-    #         "film_formula": gan.composition.formula,
-    #         "film_miller": film_miller,
-    #         "substrate_formula": si.composition.formula,
-    #         "substrate_miller": substrate_miller,
-    #         "strain": match.von_mises_strain * 100,
-    #         "elastic_energy": match.elastic_energy,
-    #     }]
-    #     print("--------------------")
-    #     print(pd.DataFrame(compatibility_struct))
-    #     print("--------------------")
-    # else:
-    #     print("--------------------")
-    #     print("No match found.")
-    #     print("--------------------")
-
-    # create a doped structure
-    si_p = create_doped_structure(si, "Si", "P", 0.2)  # 20% P doping concentration
-    print_structure([si_p], title="Doped Si with P ({}% concentration)".format(20))
-
-    # make QE input
-    si_p.to(filename=os.path.join(project_dir, "supercell.cif"), fmt="cif")
-    generate_espresso_input(os.path.join(project_dir, "supercell.cif"))
+    # check if in files are already generated
+    if not os.path.exists(os.path.join(project_dir, "scf.in")):
+        generate_espresso_input(
+            si_p["structure"],
+            out_dir=project_dir,
+            prefix="si_p",
+        )
+    else:
+        pw_output = PWOutput(os.path.join(project_dir, "scf.out"))
+        print(f"[Info] SCF output already exists at {pw_output.filename}")
+        print(f"\nFinal Energy: {pw_output.final_energy} eV")
+        print(f"Data: {pw_output.data}\n")
 
 
 if __name__ == "__main__":

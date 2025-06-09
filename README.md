@@ -6,10 +6,15 @@ running calculations in quantum espresso.
 
 ### running.
 
+you'll need to edit `main()` to build your strucuture, change calculation
+type and defining a project name.
+
 ```bash
 
 # create quantum espresso input files
 python ./src/main.py
+
+# r
 ```
 
 
