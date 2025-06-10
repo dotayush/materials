@@ -1,3 +1,4 @@
 # virtual environment path
-/ms
+/ms/
 *.env
+./out
