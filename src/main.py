@@ -224,7 +224,7 @@ def generate_espresso_input(
     dos_data: QEInputType = {
         "prefix": prefix,
         "outdir": out_dir,
-        "fildos": "dos.out",
+        "fildos": os.path.join(out_dir, "dos.result"),
         "emin": -10,
         "emax": 10,
         "DeltaE": 0.01,
@@ -246,7 +246,7 @@ def generate_espresso_input(
     phonon_data: QEInputType = {
         "prefix": prefix,
         "outdir": out_dir,
-        "fildyn": "dyn.out",
+        "fildyn": os.path.join(out_dir, "ph.result"),
         "tr2_ph": 1e-14,  # convergence threshold for phonon calculations
         "nq1": 4,  # number of q-points in the first direction
         "nq2": 4,  # number of q-points in the second direction
@@ -258,8 +258,8 @@ def generate_espresso_input(
             f"{key} = '{value}'" if isinstance(value, str) else f"{key} = {value:.6f}"
             for key, value in phonon_data.items()
         ]
-    ).join("ldisp = .true.")  # add ldisp flag for phonon calculations
-    phonon_str = f"&inputph\n{phonon_str}\n/\n"
+    )
+    phonon_str = f"&inputph\n{phonon_str}\nldisp = .true.\n/\n"
     input_file = os.path.join(out_dir, "ph.in")
     with open(input_file, "w") as f:
         f.write(phonon_str)

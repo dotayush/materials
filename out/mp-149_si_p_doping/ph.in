@@ -1,0 +1,10 @@
+&inputph
+prefix = 'si_p'
+outdir = '/home/ayush/personal/material_study/out/mp-149_si_p_doping'
+fildyn = '/home/ayush/personal/material_study/out/mp-149_si_p_doping/ph.result'
+tr2_ph = 0.000000
+nq1 = 4.000000
+nq2 = 4.000000
+nq3 = 4.000000
+ldisp = .true.
+/
