@@ -75,7 +75,7 @@ class PWSCFStruct:
                     self.beta = float(i.split()[3])
                     _ = next
                 if "Exchange-correlation" in i:
-                    self.Exch = i.split()[2]
+                    self.Exch = i.split()[1]
                     _ = next
                 if "a(1) =" in i:
                     tmp = i.split()
@@ -240,6 +240,7 @@ class PWSCFStruct:
 
         plt.xticks(np.arange(self.kpts), np.arange(1, self.kpts + 1))
         plt.yticks(np.arange(-15, 10, 1))  # Adjust y-ticks as needed
+
 
         # plot data
         plt.title("Band Diagram")

@@ -115,20 +115,22 @@ def create_doped_structure(
     host_element,
     dopant_element,
     dopant_concentration,
-    min_atoms=2,
+    min_atoms=5,
 ):
     """Create doped structure with specified concentration in a supercell"""
     num_host = sum(
         1 for site in structure if site.species_string == host_element
-    )  # how many host atoms are in the structure that we want to substitute/dope with?
+    )  # how many host atoms?
     scaling = max(
-        1, int(np.ceil(min_atoms / num_host))
-    )  # how many times do we need to scale the structure to have at least min_atoms of host_element?
+        1, int(min_atoms / num_host)
+    )  # how much scale to have at least min_atoms of host_element
     supercell = structure * [
         scaling,
         scaling,
         scaling,
     ]  # create a supercell that has at least min_atoms of host_element
+    print(f"[Info] The strcture has {num_host} {host_element} atoms. It's scaled by {scaling} to have at least {min_atoms} atoms.")
+    print(f"[Info] The supercell has {len(supercell)} atoms in total.")
 
     host_sites = [
         i for i, site in enumerate(supercell) if site.species_string == host_element
@@ -160,7 +162,7 @@ def generate_espresso_input(
     atoms = AseAtomsAdaptor.get_atoms(struct)
     if not isinstance(atoms, Atoms):
         raise ValueError(f"Expected a single Atoms object, but got {type(atoms)}")
-    pseudopotentials = {s: f"{s}.UPF" for s in set(atoms.get_chemical_symbols())}
+    pseudopotentials = {s: f"{s.lower()}.UPF" for s in set(atoms.get_chemical_symbols())}
     nat = len(atoms)
 
     # ---- handle SCF input generation ----
@@ -195,11 +197,29 @@ def generate_espresso_input(
     )
     print(f"[Info] Generated SCF input file at {input_file}")
 
+
+    # ---- handle relaxation input generation ----
+    control.update(
+        {
+            "calculation": "relax",  # change calculation type to relaxation
+        }
+    )
+    input_file = os.path.join(out_dir, "relax.in")
+    write(
+        input_file,
+        atoms,
+        format="espresso-in",
+        pseudopotentials=pseudopotentials,
+        ppdir=PSUEDOPOTENTIALS_DIR,
+        input_data={"control": control, "system": system, "electrons": electrons, "ions": {"ion_dynamics": "bfgs"}},
+        kpts=kpts or (4, 4, 4),  # same k-point grid for relaxation
+    )
+
+
     # ---- handle NSCF input generation ----
     control.update(
         {
             "calculation": "nscf",
-            "restart_mode": "restart",
         }
     )
     system.update(
@@ -255,7 +275,7 @@ def generate_espresso_input(
     # build phonon string
     phonon_str = "\n".join(
         [
-            f"{key} = '{value}'" if isinstance(value, str) else f"{key} = {value:.6f}"
+            f"{key} = '{value}'" if isinstance(value, str) else f"{key} = {value}"
             for key, value in phonon_data.items()
         ]
     )
@@ -282,7 +302,7 @@ def generate_doped_si_with_p(project_dir: str, concentration=0.2):
 
 def main():
     project_dir = setup_output_project("mp-149_si_p_doping")
-    si_p = generate_doped_si_with_p(project_dir, concentration=0.2)
+    si_p = generate_doped_si_with_p(project_dir, concentration=0.2) # doped Si with P @ 20% concentration
 
     # check if in files are already generated
     if not os.path.exists(os.path.join(project_dir, "scf.in")):
