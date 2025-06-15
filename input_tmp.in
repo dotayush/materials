@@ -2,9 +2,9 @@
 prefix = 'si_p'
 outdir = '/home/ayush/personal/material_study/out/mp-149_si_p_doping'
 fildyn = '/home/ayush/personal/material_study/out/mp-149_si_p_doping/ph.result'
-ldisp = .true.
 tr2_ph = 1e-14
-nq1 = 4
-nq2 = 4
-nq3 = 4
+nq1 = 2
+nq2 = 2
+nq3 = 2
+ldisp = .true.
 /

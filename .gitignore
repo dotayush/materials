@@ -1,5 +1,7 @@
-# virtual environment path
-./ms/*
+# Ignore virtual environment or config
 *.env
-./out/*
-./pseudos/*
+
+# Ignore folders
+ms/
+out/
+pseudos/

@@ -1,3 +1,4 @@
+import math
 import os
 
 
@@ -114,23 +115,20 @@ def create_doped_structure(
     structure: Structure,
     host_element,
     dopant_element,
-    dopant_concentration,
-    min_atoms=5,
+    dopant_concentration, # 0.0 ~ 1.0 (0.02 = 2% concentration etc.)
 ):
     """Create doped structure with specified concentration in a supercell"""
     num_host = sum(
         1 for site in structure if site.species_string == host_element
     )  # how many host atoms?
     scaling = max(
-        1, int(min_atoms / num_host)
+        1, math.ceil(int(math.cbrt(num_host/dopant_concentration)))
     )  # how much scale to have at least min_atoms of host_element
     supercell = structure * [
         scaling,
         scaling,
         scaling,
     ]  # create a supercell that has at least min_atoms of host_element
-    print(f"[Info] The strcture has {num_host} {host_element} atoms. It's scaled by {scaling} to have at least {min_atoms} atoms.")
-    print(f"[Info] The supercell has {len(supercell)} atoms in total.")
 
     host_sites = [
         i for i, site in enumerate(supercell) if site.species_string == host_element
@@ -149,9 +147,12 @@ def create_doped_structure(
         :n_dopants
     ]:  # replace the first n_dopants host sites with the dopant_element
         supercell.replace(idx, dopant_element)
-    return (
-        supercell.get_primitive_structure()
-    )  # return the primitive structure of the doped supercell for further calculations
+
+    print(
+        f"[Info] The strcture has {num_host} {host_element} atoms. It's scaled by {scaling}. The supercell ({supercell.formula}) is {scaling}x{scaling}x{scaling} or {len(supercell)} atoms. The concentration of {dopant_element} will be {dopant_concentration * 100:.2f}%."
+    )
+
+    return supercell
 
 
 def generate_espresso_input(
@@ -162,7 +163,9 @@ def generate_espresso_input(
     atoms = AseAtomsAdaptor.get_atoms(struct)
     if not isinstance(atoms, Atoms):
         raise ValueError(f"Expected a single Atoms object, but got {type(atoms)}")
-    pseudopotentials = {s: f"{s.lower()}.UPF" for s in set(atoms.get_chemical_symbols())}
+    pseudopotentials = {
+        s: f"{s.lower()}.UPF" for s in set(atoms.get_chemical_symbols())
+    }
     nat = len(atoms)
 
     # ---- handle SCF input generation ----
@@ -197,7 +200,6 @@ def generate_espresso_input(
     )
     print(f"[Info] Generated SCF input file at {input_file}")
 
-
     # ---- handle relaxation input generation ----
     control.update(
         {
@@ -211,10 +213,15 @@ def generate_espresso_input(
         format="espresso-in",
         pseudopotentials=pseudopotentials,
         ppdir=PSUEDOPOTENTIALS_DIR,
-        input_data={"control": control, "system": system, "electrons": electrons, "ions": {"ion_dynamics": "bfgs"}},
+        input_data={
+            "control": control,
+            "system": system,
+            "electrons": electrons,
+            "ions": {"ion_dynamics": "bfgs"},
+        },
         kpts=kpts or (4, 4, 4),  # same k-point grid for relaxation
     )
-
+    print(f"[Info] Generated relaxation input file at {input_file}")
 
     # ---- handle NSCF input generation ----
     control.update(
@@ -286,7 +293,7 @@ def generate_espresso_input(
     print(f"[Info] Generated phonon input file at {input_file}")
 
 
-def generate_doped_si_with_p(project_dir: str, concentration=0.2):
+def generate_doped_si_with_p(project_dir: str, concentration=0.01):
     save_path = os.path.join(project_dir, "supercell.cif")
     if not os.path.exists(save_path):
         si_p = create_doped_structure(
@@ -302,7 +309,9 @@ def generate_doped_si_with_p(project_dir: str, concentration=0.2):
 
 def main():
     project_dir = setup_output_project("mp-149_si_p_doping")
-    si_p = generate_doped_si_with_p(project_dir, concentration=0.2) # doped Si with P @ 20% concentration
+    si_p = generate_doped_si_with_p(
+        project_dir, concentration=(2 / 100)
+    )  # doped Si with P @ 50% concentration
 
     # check if in files are already generated
     if not os.path.exists(os.path.join(project_dir, "scf.in")):
