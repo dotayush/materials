@@ -181,7 +181,7 @@ def generate_espresso_input(
         "ecutwfc": 30,
         "ecutrho": 240,
         "occupations": "smearing",  # default to smearing for SCF
-        "smearing": "gaussian",  # default smearing type
+        "smearing": "marzari-vanderbilt",  # default smearing type
         "degauss": 0.01,  # default smearing width
     }
     electrons: QEInputType = {
@@ -231,8 +231,7 @@ def generate_espresso_input(
     )
     system.update(
         {
-            "occupations": "fixed",  # fixed occupations for NSCF
-            "nbnd": nbnd or 2 * nat,  # number of bands, default to 2 * nat
+            "nbnd": nbnd or 4 * nat,  # number of bands, default to 4 * nat
         }
     )
     input_file = os.path.join(out_dir, "nscf.in")
@@ -310,7 +309,7 @@ def generate_doped_si_with_p(project_dir: str, concentration=0.01):
 def main():
     project_dir = setup_output_project("mp-149_si_p_doping")
     si_p = generate_doped_si_with_p(
-        project_dir, concentration=(2 / 100)
+        project_dir, concentration=(10 / 100)
     )  # doped Si with P @ 50% concentration
 
     # check if in files are already generated
