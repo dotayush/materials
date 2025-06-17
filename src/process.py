@@ -93,7 +93,7 @@ class Compound:
 
 def main():
     compound = Compound()
-    file_path = os.path.join(PROJECT_DIR, "nscf.out")
+    file_path = os.path.join(PROJECT_DIR, "scf.out")
     with open(file_path, "r") as f:
         scf_text = f.read()
 
