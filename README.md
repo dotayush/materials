@@ -33,7 +33,7 @@ def main():
     my_structure = Structure.from_file("path/to/your/structure/file")
 
     # setup output project directory
-    project_dir = setup_output_project("<project_name>")
+    project_dir = setup_output_project("my_structure_project")
 
     # generate input files for Quantum ESPRESSO
     generate_espresso_input(my_structure, out_dir=project_dir, prefix="my_structure")
