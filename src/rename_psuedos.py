@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 _ = load_dotenv()
 
 
-PSEUDOS_DIR = os.path.join(os.getcwd(), os.getenv("PSEUDOS_DIR", "./psuedos"))
+PSEUDOS_DIR = os.path.join(os.getcwd(), os.getenv("PSEUDOS_DIR", "./pseudos"))
 
 def rename_psuedo_files():
     cwd = os.getcwd()

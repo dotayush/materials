@@ -18,6 +18,7 @@
 """
 import numpy as np
 import re
+import os
 import matplotlib.pyplot as plt
 
 PROJECT_DIR = "./out/mp-149_si_p_doping"
