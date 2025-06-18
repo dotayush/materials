@@ -1,5 +1,5 @@
 """
-    "Materials" is a collection of post-processing scripts to process and
+    "materials." is a collection of post-processing scripts to process and
     anaylze materials data from Quantum ESPRESSO (QE) calculations.
     Copyright (C) 2025 ayush.
 
