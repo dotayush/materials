@@ -1,33 +1,46 @@
 # material analysis.
 
-the following code is used to build a doped strucutre using pymatgen and
-then the structure files are converted from cif to pw.x input files for
-running calculations in quantum espresso.
+"Materials" is a collection of post-processing scripts to process and anaylze
+materials data from Quantum ESPRESSO (QE) calculations.
 
 ### running.
 
-you'll need to edit `main()` to build your strucuture, change calculation
-type and defining a project name. this will generate the input files for
-scf, nscf and dos and phonon calculations.
+#### setting up potentials.
+1) download pseudopotentials from [SSSP precision library](https://www.materialscloud.org/discover/sssp/table/precision)
+which contains all pseudopotential files and place them in some directory
+(e.g. `./pseudos/`).
+2) set the `PSEUDO_DIR` variable in `.env` file to the path of this directory.
+3) run `python ./src/rename_pseudos.py` to rename the pseudopotential files
+for other scripts to recognize.
 
-```bash
-# create quantum espresso input files
-python ./src/main.py
+
+#### creating pymatgen structure.
+1) edit `./src/main.py`'s `main()` function to create/build/modify a `pymatgen`
+structure object for your material of interest.
+2) call `project_dir = setup_output_project("<project_name>")` to create a
+project directory under `./out/` with the name `<project_name>`.
+3) after your structure creation, call `generate_espresso_input(<my_structure>,
+out_dir=project_dir, prefix="<espresso_output_prefix>")` to generate the input
+filesfor Quantum ESPRESSO calculations under `./out/<project_name>/`.
+
+the final code in main should look like this:
+```python
+from pymatgen.core import Structure
+
+def main():
+    # create your pymatgen structure object (below i've loaded a structure, but
+    # you can create it from scratch or modify an existing one with pymatgen)
+    my_structure = Structure.from_file("path/to/your/structure/file")
+
+    # setup output project directory
+    project_dir = setup_output_project("<project_name>")
+
+    # generate input files for Quantum ESPRESSO
+    generate_espresso_input(my_structure, out_dir=project_dir, prefix="my_structure")
 ```
 
-i recommend downloading psudopotentials from [SSSP precision](https://www.materialscloud.org/discover/sssp/table/precision)
-which contains all psuedopotential files and placing them in the `./pseudos/` directory.
-i then recommend you to run,
-
-```bash
-# it removed the extra stuff and converts elements
-# to lowercase.UPF filename. this matches the
-# naming convention used in the input files for pseudos.
-python ./src/rename_pseudos.py
-```
-
-now you're free to run your calculations in quantum espresso.
-
+#### running calculations.
+after generating the input files, you can run the calculations using
 ```bash
 
 # run scf calculation
@@ -43,8 +56,8 @@ pw.x < ./out/<project_name>/dos.in > ./out/<project_name>/dos.out
 ph.x < ./out/<project_name>/ph.in > ./out/<project_name>/ph.out
 ```
 
-to check the status of the calculations,
-
+#### checking calculation progress.
+run the following command in a separate terminal to monitor the output of
 ```bash
 # calculation type = scf, nscf, dos or ph
 tail -f ./out/<project_name>/<calculation_type>.out

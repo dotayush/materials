@@ -1,11 +1,27 @@
+"""
+    "Materials" is a collection of post-processing scripts to process and
+    anaylze materials data from Quantum ESPRESSO (QE) calculations.
+    Copyright (C) 2025 ayush.
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
 import os
+from dotenv import load_dotenv
+_ = load_dotenv()
 
-# the goal is to iterate through cwd + psuedo folder for all psuedo files
-# then in the first three letters of the filename, either check for . or _ and then
-# split the filename into whatever is before the first . or _ and then
-# change the first part to lowercase
 
-PSEUDOS_DIR = os.path.join(os.getcwd(), "pseudos")
+PSEUDOS_DIR = os.path.join(os.getcwd(), os.getenv("PSEUDOS_DIR", "./psuedos"))
 
 def rename_psuedo_files():
     cwd = os.getcwd()
