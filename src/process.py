@@ -709,11 +709,11 @@ class NonSCF:
                 self.bandgap,
             ) = process_gap(self.kpts, self.bands, self.occupation)
 
+            # cbm = np.argmin(self.min_local)
+            # dk = np.linalg.norm(k_cart[cbm + 1] - k_cart[cbm])
+            # print("Δk between neighbor points (Å⁻¹):", dk)
             # effective mass
             k_cart = self.kpoint_weights @ self.reciprocal_axis
-            cbm = np.argmin(self.min_local)
-            dk = np.linalg.norm(k_cart[cbm + 1] - k_cart[cbm])
-            print("Δk between neighbor points (Å⁻¹):", dk)
             self.effective_mass_n = find_effective_mass(
                 k_cart,
                 self.min_local,
