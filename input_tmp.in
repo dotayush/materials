@@ -1,0 +1,8 @@
+&DOS
+prefix = 'si'
+outdir = '/home/ayush/personal/material_study/out/Si16'
+fildos = '/home/ayush/personal/material_study/out/Si16/dos.result'
+emin = -10.000000
+emax = 10.000000
+DeltaE = 0.010000
+/

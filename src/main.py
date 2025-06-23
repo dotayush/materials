@@ -24,6 +24,7 @@ import os
 import matplotlib
 import numpy as np
 import pandas as pd
+from itertools import product
 from typing import Union
 from ase.atoms import Atoms
 from ase.calculators.espresso import EspressoProfile
@@ -50,7 +51,8 @@ SAVED_STRUCTURES_DIR = os.path.join(
     os.getcwd(), os.getenv("SAVED_STRUCTURES_DIR", "./saved_structures")
 )
 PSEUDOPOTENTIALS_DIR = os.path.join(os.getcwd(), os.getenv("PSEUDOS_DIR", "./pseudos"))
-OUTPUT_DIR = os.path.join(os.getcwd(), os.getenv("OUTPUT_DIR", "./out"))
+OUTPUT_DIR = os.path.join(os.getcwd(), os.getenv("OUTPUT_DIR", "out"))
+PROJECT_NAME = os.getenv("PROJECT_NAME", "default_project")
 
 espresso_profile = EspressoProfile(
     command="mpirun -np 4 pw.x", pseudo_dir=PSEUDOPOTENTIALS_DIR
@@ -158,47 +160,83 @@ def substrate_compatibility(structure_a: Structure, structure_b: Structure):
     # return the match with the lowest von mises strain
     return min(matches, key=lambda x: x.strain.von_mises_strain)
 
+def find_optimal_scale(required_scale: float, max_scale: int = 10):
+    """Find scale factors (i, j, k) such that:
+    - i * j * k >= required_scale
+    - the product is as close as possible to required_scale
+    - i, j, k are as balanced (close to each other) as possible
+    """
+    best_combo = (1, 1, 1)
+    best_score = float('inf')
 
-def get_anisotropic_scaling(n, concentration):
-    target = 1 / concentration
-    factors = []
+    for i, j, k in product(range(1, max_scale + 1), repeat=3):
+        product_val = i * j * k
+        if product_val >= required_scale:
+            # spread penalty: how unbalanced the values are
+            spread = max(i, j, k) - min(i, j, k)
+            # closeness to required scale
+            excess = product_val - required_scale
+            # score combines both (weight spread more heavily to prioritize balance)
+            score = spread * 10 + excess
+            if score < best_score:
+                best_score = score
+                best_combo = (i, j, k)
 
-    # Find minimal a×b×c where (n*a*b*c) % (1/concentration) == 0
-    for v in range(1, 100):
-        if (n * v) % target == 0:
-            # Factorize v into a,b,c
-            for a in range(1, v+1):
-                if v % a != 0: continue
-                for b in range(1, v//a+1):
-                    c = v // (a*b)
-                    if a*b*c == v:
-                        factors.append((a,b,c))
-            # Return most cubic-like factors
-            return min(factors, key=lambda x: max(x)/min(x))
+    return best_combo
 
-    return (1,1,math.ceil(target/n))  # Fallback
+def fix_labels(structure: Structure):
+    """Fix the labels of the sites in a structure to ensure they are unique."""
+    labelled_sites = []
+    label_counters = {}
+    for site in structure:
+        label = site.species_string
+        if label not in label_counters:
+            label_counters[label] = 0
+        else:
+            label_counters[label] += 1
+            label = f"{label}_{label_counters[label]}"
+        labelled_sites.append(Site(site.species, site.coords, label=label))
 
+    labelled_supercell = Structure(
+        lattice=structure.lattice,
+        species=[site.species for site in labelled_sites],
+        coords=[site.coords for site in labelled_sites],
+        site_properties={},
+    )
+    return labelled_supercell
 
 def create_doped_structure(
     structure: Structure,
+    host_element: str,
     dopant_element: str,
     dopant_concentration: float,
 ):
-    # get supercell size
     conventional = SpacegroupAnalyzer(structure).get_conventional_standard_structure()
-    a_s, b_s, c_s = get_anisotropic_scaling(conventional, dopant_concentration)
+    c_nat = len([site for site in conventional if site.species_string == host_element]) # 8 Si atoms
+    t_nat = c_nat # let t_nat start from the conventional atoms = 8
+    while True:
+        if t_nat * dopant_concentration < 1: # if 8 * (1.1 / 100) <= 1 => 0.088 < 1, then t_nat++
+            t_nat += 1
+        else: # if 91 * (0.1 / 100) >= 1 => 1.001 >= 1, then we can stop; here t_nat = 91
+            break
+
+    # 91 / 8 = 11.375 (required scale factor)
+    required_scale = t_nat / c_nat
+    scale = find_optimal_scale(required_scale)
+    # if (dopant_concentration*100) <= 5.0:
+    #     scale = find_optimal_scale(required_scale)
+    # else:
+    #     scale_num = max(1, math.ceil(1/(dopant_concentration) ** (1/3)))
+    #     scale = (scale_num, scale_num, scale_num)
 
     # make supercell
-    supercell = conventional.make_supercell(np.diag([a_s, b_s, c_s]))
-    t_nat = len(supercell)
-    d_nat = int(round(dopant_concentration * t_nat))
-
-    # calculate exact number of dopants
+    supercell = conventional * scale
+    s_nat = len([site for site in supercell if site.species_string == host_element])
 
     # random substitution
     host_indices = [i for i, _ in enumerate(supercell)]
     np.random.shuffle(host_indices)
-    for idx in host_indices[:d_nat]:
+    for idx in host_indices[:1]:
         supercell.replace(idx, dopant_element)
 
     # wrap the supercell to ensure all sites are within the unit cell
@@ -209,30 +247,9 @@ def create_doped_structure(
     # )
 
     # fix labels
-    labelled_sites = []
-    label_counters = {}
-    for site in supercell:
-        label = site.species_string
-        if label not in label_counters:
-            label_counters[label] = 0
-        else:
-            label_counters[label] += 1
-            label = f"{label}_{label_counters[label]}"
-        labelled_sites.append(Site(site.species, site.coords, label=label))
+    labelled_supercell = fix_labels(supercell)
 
-    labelled_supercell = Structure(
-        lattice=supercell.lattice,
-        species=[site.species for site in labelled_sites],
-        coords=[site.coords for site in labelled_sites],
-        site_properties={},
-    )
-
-    print(
-        f"info: created {a_s}x{b_s}x{c_s} supercell: {t_nat} atoms (expected: {dopant_concentration * 100:.1f}% concentration). "
-        f"calculated {(d_nat / len(labelled_supercell)) * 100:.1f}% doping concentration."
-    )
-
-    data_str = f"({a_s:.1f}x{b_s:.1f}x{c_s:.1f})_{d_nat}/{len(labelled_supercell)}_{(d_nat / len(labelled_supercell)) * 100:.1f}%"
+    data_str = f"{scale}({scale[0] * scale[1] * scale[2]})_{t_nat}/{c_nat}_{required_scale:.3f}_{len(supercell)}_{(1 / s_nat)*100:.3f}"
 
     return labelled_supercell, data_str
 
@@ -262,11 +279,13 @@ def generate_espresso_input(
         "pseudo_dir": PSEUDOPOTENTIALS_DIR,
         "outdir": out_dir,
         "verbosity": "high",
+        "tstress": True,
+        "tprnfor": True,
     }
     system: QEInputType = {
         "nat": nat,
         "ecutwfc": 30,
-        "ecutrho": 240,
+        "ecutrho": 120,
         "occupations": "smearing",  # default to smearing for SCF
         "smearing": "marzari-vanderbilt",  # default smearing type
         "degauss": 0.01,  # default smearing width
@@ -287,31 +306,6 @@ def generate_espresso_input(
     )
     print(
         f"info: generated SCF input file at {os.path.relpath(input_file, os.getcwd())}"
-    )
-
-    # ---- handle relaxation input generation ----
-    control.update(
-        {
-            "calculation": "relax",  # change calculation type to relaxation
-        }
-    )
-    input_file = os.path.join(out_dir, "relax.in")
-    write(
-        input_file,
-        atoms,
-        format="espresso-in",
-        pseudopotentials=pseudopotentials,
-        ppdir=PSEUDOPOTENTIALS_DIR,
-        input_data={
-            "control": control,
-            "system": system,
-            "electrons": electrons,
-            "ions": {"ion_dynamics": "bfgs"},
-        },
-        kpts=kpts or (4, 4, 4),  # same k-point grid for relaxation
-    )
-    print(
-        f"info: generated relaxation input file at {os.path.relpath(input_file, os.getcwd())}"
     )
 
     # ---- handle NSCF input generation ----
@@ -337,6 +331,31 @@ def generate_espresso_input(
     )
     print(
         f"info: generated NSCF input file at {os.path.relpath(input_file, os.getcwd())}"
+    )
+
+    # ---- handle relaxation input generation ----
+    control.update(
+        {
+            "calculation": "relax",  # change calculation type to relaxation
+        }
+    )
+    input_file = os.path.join(out_dir, "relax.in")
+    write(
+        input_file,
+        atoms,
+        format="espresso-in",
+        pseudopotentials=pseudopotentials,
+        ppdir=PSEUDOPOTENTIALS_DIR,
+        input_data={
+            "control": control,
+            "system": system,
+            "electrons": electrons,
+            "ions": {"ion_dynamics": "bfgs"},
+        },
+        kpts=kpts or (2, 2, 2),  # same k-point grid for relaxation
+    )
+    print(
+        f"info: generated relaxation input file at {os.path.relpath(input_file, os.getcwd())}"
     )
 
     # ---- handle DOS input generation ----
@@ -391,32 +410,23 @@ def generate_espresso_input(
 
 def main():
     # setup project directory
-    PROJECT_NAME = "si_p_doping"
     project_dir = setup_output_project(PROJECT_NAME)
 
-    # create a doped structure with Si and P
-    size_table: dict[str, str] = {}
-    structure = get_structure_from_id("mp-149")
-    for i in np.arange(1, 10.0, 1):
-        print(f"info: generating doped structure with {i:.1f}% P doping")
-        si_p, data_str = create_doped_structure(structure, "P", (i / 100.0))
-        i_to_formatted_str = f"{i:.1f}".replace(".", "_")
-        size_table[i_to_formatted_str] = data_str
+    structure = SpacegroupAnalyzer(get_structure_from_id("mp-149")).get_conventional_standard_structure()
+    structure.make_supercell(
+         np.diag([2, 1, 1])
+    )  # make a 2x1x1 supercell of Si i.e. # 16 Si atoms
+    # structure.replace(0, "P")  # replace the first Si atom with P; this means 1/16 P doping or 6.25% P doping in Si crystal
+    # supercell = fix_labels(structure)  # fix labels to ensure uniqueness; culprit for distorting the atom position in the supercell
+    print_structure([structure])
+    structure.to(filename=os.path.join(project_dir, "supercell.cif"), fmt="cif")
 
-    print(size_table)
-
-    # structure = get_structure_from_id("mp-149")
-    # si_p, _ = create_doped_structure(
-    #     structure, "Si", "P", (6.2 / 100)
-    # )
-    # si_p.to(filename=os.path.join(project_dir, "supercell.cif"), fmt="cif")
-
-    # # generate the input files for Quantum ESPRESSO
-    # generate_espresso_input(
-    #     si_p,
-    #     out_dir=project_dir,
-    #     prefix="si_p",
-    # )
+    # generate the input files for Quantum ESPRESSO
+    generate_espresso_input(
+        structure,
+        out_dir=project_dir,
+        prefix="si",
+    )
 
 
 if __name__ == "__main__":
