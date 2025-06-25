@@ -79,6 +79,11 @@ def process_bands(kpts_count: int = 0, kohn_sham_count: int = 0, filepath: str =
     with open(filepath, "r") as file:
         lines = file.readlines()
 
+    for i, line in enumerate(lines):
+        if re.search(r"End of (self-consistent|band structure) calculation", line):
+            lc = i
+            print(f"gen:info: found end of calculation at line {lc + 1}")
+
     # extract k-points, band energies and occupations for each k-point
     band_index = 0
     while lc < len(lines):
@@ -234,31 +239,27 @@ def process_stress_tensor(filepath: str = ""):
 
 
 def find_effective_mass(k_cart, energies, edge_idx):
-    """
-    k_cart: (N,3) in Å^-1
-    energies: (N,) in eV
-    edge_idx: index of CBM or VBM
-    """
     # get the two neighbors
-    i = edge_idx
-    ip = i + 1 if i + 1 < len(energies) else i
-    im = i - 1 if i - 1 >= 0 else i
+    next_idx = (edge_idx + 1) if (edge_idx + 1 < len(energies)) else edge_idx
+    prev_idx = (edge_idx - 1) if (edge_idx - 1 >= 0) else edge_idx
 
-    E0 = energies[i]
-    Ep = energies[ip]
-    Em = energies[im]
+    print(f"gen:info: edge_idx={edge_idx}, next_idx={next_idx}, prev_idx={prev_idx}, len(energies)={len(energies)}")
 
-    dk_A = np.linalg.norm(k_cart[ip] - k_cart[i])  # Δk magnitude in Å^-1
-    dk = dk_A * 1e10  # 1 Å = 1e-10 m
+    center_energy = energies[edge_idx]
+    next_energy = energies[next_idx]
+    prev_energy = energies[prev_idx]
 
-    # numerator (in J): convert eV→J
-    d2E = (Ep + Em - 2 * E0) * EV_TO_J
+    dk = np.linalg.norm(k_cart[next_idx] - k_cart[edge_idx])  * 1e10  # 1e10 for A -> m conversion
+    d2E = (next_energy + prev_energy - 2 * center_energy) * EV_TO_J # EV_TO_J for eV -> J conversion
 
-    # effective mass in kg
-    m_eff = abs((REDUCED_PLANCKS_CONSTANT**2 * dk**2) / d2E)
+    print(f"gen:info: dk={dk}, d2E={d2E}, center_energy={center_energy}, next_energy={next_energy}, prev_energy={prev_energy}")
+
+    # formulae: m_eff_kg = (hbar^2 * dk^2) / d2E
+    m_eff_kg = abs((REDUCED_PLANCKS_CONSTANT**2 * dk**2) / d2E)
+    print(f"gen:info: m_eff_kg={m_eff_kg}")
 
     # in m_e
-    return m_eff / M_ELECTRON
+    return m_eff_kg / M_ELECTRON
 
 
 def intrinsic_carriers(cbm_energy_eV, vbm_energy_eV, m_eff_e, m_eff_h, T=300.0):
@@ -596,7 +597,6 @@ class SCF:
 
 class NonSCF:
     def __init__(self, project_dir: str = ""):
-        self.E_F = 0.0
         self.crystal_axis = np.zeros((3, 3))  # crystal axes in angstroms
         self.reciprocal_axis = np.zeros((3, 3))  # reciprocal crystal axes in angstrom
         self.alat = 0.0  # lattice parameter in bohr units
@@ -626,13 +626,6 @@ class NonSCF:
     def process_nscf(self, filepath: str = ""):
         with open(filepath, "r") as file:
             nscf_text = file.read()
-            # fermi energy
-            m = re.search(r"the Fermi energy is\s+([+\-\d\.]+)\s+ev", nscf_text)
-            if m:
-                self.E_F = float(m.group(1))
-            else:
-                self.E_F = 0.0
-                print("nscf:warn: fermi energy not found.")
 
             # ibrav; same as SCF, not rendered
             m = re.search(r"bravais-lattice index\s*=\s*(\d+)", nscf_text)
@@ -737,7 +730,6 @@ class NonSCF:
 
     def print_nscf(self):
         print("-" * 30 + " NSCF DATA " + "-" * 30)
-        print(f"fermi energy = {self.E_F} eV")
         print(f"number of k-points = {self.kpts}")
         print(f"number of kohn-sham states = {self.ks_states}")
         print(f"valence band maximum = {self.vbm} eV")

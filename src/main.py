@@ -43,8 +43,6 @@ matplotlib.use("Qt5Agg")
 # load environment variables
 _ = load_dotenv()
 MP_API_KEY = os.getenv("MP_API_KEY")
-if MP_API_KEY:
-    mpr = MPRester(MP_API_KEY)
 
 # directories for saved structures and pseudopotentials
 SAVED_STRUCTURES_DIR = os.path.join(
@@ -131,6 +129,8 @@ def get_structure_from_id(mp_id: str) -> Structure:
             raise ValueError(
                 "error: MP_API_KEY is not set and get_structure_from_id was called. please set the api key in the .env file to utilise mp rester client for material retrieval."
             )
+        else:
+            mpr = MPRester(MP_API_KEY)
         structure = mpr.get_structure_by_material_id(mp_id)
 
         # ensure saved structures directory exists
@@ -160,6 +160,7 @@ def substrate_compatibility(structure_a: Structure, structure_b: Structure):
     # return the match with the lowest von mises strain
     return min(matches, key=lambda x: x.strain.von_mises_strain)
 
+
 def find_optimal_scale(required_scale: float, max_scale: int = 10):
     """Find scale factors (i, j, k) such that:
     - i * j * k >= required_scale
@@ -167,7 +168,7 @@ def find_optimal_scale(required_scale: float, max_scale: int = 10):
     - i, j, k are as balanced (close to each other) as possible
     """
     best_combo = (1, 1, 1)
-    best_score = float('inf')
+    best_score = float("inf")
 
     for i, j, k in product(range(1, max_scale + 1), repeat=3):
         product_val = i * j * k
@@ -184,27 +185,6 @@ def find_optimal_scale(required_scale: float, max_scale: int = 10):
 
     return best_combo
 
-def fix_labels(structure: Structure):
-    """Fix the labels of the sites in a structure to ensure they are unique."""
-    labelled_sites = []
-    label_counters = {}
-    for site in structure:
-        label = site.species_string
-        if label not in label_counters:
-            label_counters[label] = 0
-        else:
-            label_counters[label] += 1
-            label = f"{label}_{label_counters[label]}"
-        labelled_sites.append(Site(site.species, site.coords, label=label))
-
-    labelled_supercell = Structure(
-        lattice=structure.lattice,
-        species=[site.species for site in labelled_sites],
-        coords=[site.coords for site in labelled_sites],
-        site_properties={},
-    )
-    return labelled_supercell
-
 def create_doped_structure(
     structure: Structure,
     host_element: str,
@@ -212,12 +192,16 @@ def create_doped_structure(
     dopant_concentration: float,
 ):
     conventional = SpacegroupAnalyzer(structure).get_conventional_standard_structure()
-    c_nat = len([site for site in conventional if site.species_string == host_element]) # 8 Si atoms
-    t_nat = c_nat # let t_nat start from the conventional atoms = 8
+    c_nat = len(
+        [site for site in conventional if site.species_string == host_element]
+    )  # 8 Si atoms
+    t_nat = c_nat  # let t_nat start from the conventional atoms = 8
     while True:
-        if t_nat * dopant_concentration < 1: # if 8 * (1.1 / 100) <= 1 => 0.088 < 1, then t_nat++
+        if (
+            t_nat * dopant_concentration < 1
+        ):  # if 8 * (1.1 / 100) <= 1 => 0.088 < 1, then t_nat++
             t_nat += 1
-        else: # if 91 * (0.1 / 100) >= 1 => 1.001 >= 1, then we can stop; here t_nat = 91
+        else:  # if 91 * (0.1 / 100) >= 1 => 1.001 >= 1, then we can stop; here t_nat = 91
             break
 
     # 91 / 8 = 11.375 (required scale factor)
@@ -249,7 +233,7 @@ def create_doped_structure(
     # fix labels
     labelled_supercell = fix_labels(supercell)
 
-    data_str = f"{scale}({scale[0] * scale[1] * scale[2]})_{t_nat}/{c_nat}_{required_scale:.3f}_{len(supercell)}_{(1 / s_nat)*100:.3f}"
+    data_str = f"{scale}({scale[0] * scale[1] * scale[2]})_{t_nat}/{c_nat}_{required_scale:.3f}_{len(supercell)}_{(1 / s_nat) * 100:.3f}"
 
     return labelled_supercell, data_str
 
@@ -289,6 +273,7 @@ def generate_espresso_input(
         "occupations": "smearing",  # default to smearing for SCF
         "smearing": "marzari-vanderbilt",  # default smearing type
         "degauss": 0.01,  # default smearing width
+        "nosym": True,  # disable symmetry for SCF
     }
     electrons: QEInputType = {
         "conv_thr": 1e-8,
@@ -306,31 +291,6 @@ def generate_espresso_input(
     )
     print(
         f"info: generated SCF input file at {os.path.relpath(input_file, os.getcwd())}"
-    )
-
-    # ---- handle NSCF input generation ----
-    control.update(
-        {
-            "calculation": "nscf",
-        }
-    )
-    system.update(
-        {
-            "nbnd": nbnd or 4 * nat,  # number of bands, default to 4 * nat
-        }
-    )
-    input_file = os.path.join(out_dir, "nscf.in")
-    write(
-        input_file,
-        atoms,
-        format="espresso-in",
-        pseudopotentials=pseudopotentials,
-        ppdir=PSEUDOPOTENTIALS_DIR,
-        input_data={"control": control, "system": system, "electrons": electrons},
-        kpts=kpts or (8, 8, 8),  # denser k-point grid for NSCF
-    )
-    print(
-        f"info: generated NSCF input file at {os.path.relpath(input_file, os.getcwd())}"
     )
 
     # ---- handle relaxation input generation ----
@@ -358,6 +318,34 @@ def generate_espresso_input(
         f"info: generated relaxation input file at {os.path.relpath(input_file, os.getcwd())}"
     )
 
+    # ---- handle NSCF input generation ----
+    control.update(
+        {
+            "calculation": "nscf",
+        }
+    )
+    system.update(
+        {
+            "nbnd": nbnd or 4 * nat,  # number of bands, default to 4 * nat
+            "occupations": "fixed",  # use fixed occupations for NSCF
+        }
+    )
+    system.pop("smearing", None)  # remove smearing for NSCF
+    system.pop("degauss", None)  # remove degauss for NSCF
+    input_file = os.path.join(out_dir, "nscf.in")
+    write(
+        input_file,
+        atoms,
+        format="espresso-in",
+        pseudopotentials=pseudopotentials,
+        ppdir=PSEUDOPOTENTIALS_DIR,
+        input_data={"control": control, "system": system, "electrons": electrons},
+        kpts=kpts or (8, 8, 8),  # denser k-point grid for NSCF
+    )
+    print(
+        f"info: generated NSCF input file at {os.path.relpath(input_file, os.getcwd())}"
+    )
+
     # ---- handle DOS input generation ----
     dos_data: QEInputType = {
         "prefix": prefix,
@@ -370,7 +358,11 @@ def generate_espresso_input(
     # build dos string
     dos_str = "\n".join(
         [
-            f"{key} = '{value}'" if isinstance(value, str) else f"{key} = {value:.6f}"
+            f"{key} = '{value}'"
+            if isinstance(value, str)
+            else f"{key} = .{str(value).lower()}"
+            if isinstance(value, bool)
+            else f"{key} = {value}"
             for key, value in dos_data.items()
         ]
     )
@@ -395,7 +387,11 @@ def generate_espresso_input(
     # build phonon string
     phonon_str = "\n".join(
         [
-            f"{key} = '{value}'" if isinstance(value, str) else f"{key} = {value}"
+            f"{key} = '{value}'"
+            if isinstance(value, str)
+            else f"{key} = .{str(value).lower()}."
+            if isinstance(value, bool)
+            else f"{key} = {value}"
             for key, value in phonon_data.items()
         ]
     )
@@ -409,20 +405,19 @@ def generate_espresso_input(
 
 
 def main():
-    # setup project directory
-    project_dir = setup_output_project(PROJECT_NAME)
+    project_dir = setup_output_project(PROJECT_NAME) # generate output directory for the project
 
-    structure = SpacegroupAnalyzer(get_structure_from_id("mp-149")).get_conventional_standard_structure()
-    structure.make_supercell(
-         np.diag([2, 1, 1])
-    )  # make a 2x1x1 supercell of Si i.e. # 16 Si atoms
-    # structure.replace(0, "P")  # replace the first Si atom with P; this means 1/16 P doping or 6.25% P doping in Si crystal
-    # supercell = fix_labels(structure)  # fix labels to ensure uniqueness; culprit for distorting the atom position in the supercell
-    print_structure([structure])
+    structure = get_structure_from_id("mp-149")
+    # structure.make_supercell(
+    #     np.diag([2, 2, 2])
+    # )  # make a 2x1x1 supercell of Si i.e. # 16 Si atoms
+    # structure.replace(
+    #     0, "P"
+    # )  # replace the first Si atom with P; this means 1/16 P doping or 6.25% P doping in Si crystal
+    # print_structure([structure])
     structure.to(filename=os.path.join(project_dir, "supercell.cif"), fmt="cif")
 
-    # generate the input files for Quantum ESPRESSO
-    generate_espresso_input(
+    generate_espresso_input( # generate QE input files for the structure
         structure,
         out_dir=project_dir,
         prefix="si",
