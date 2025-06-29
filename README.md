@@ -1,7 +1,8 @@
 # materials.
 
-"materials." is a collection of post-processing scripts to process and anaylze
-materials data from Quantum ESPRESSO (QE) calculations.
+"materials." is a small tool which generates the input files for Quantum Espresso.
+it also contains a script to post-process the results of the calculations (scf,
+nscf implemented so far) and extract useful information from them.
 
 ### running.
 
