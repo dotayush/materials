@@ -20,26 +20,45 @@ to defaults.
 you have to build your structure in `main.py`'s `main()` function.
 you'll have to two more functions to generate the input files. here's
 an example of how to do that:
+
 ```py
 def main():
     # get project directory
     project_dir = setup_output_project(PROJECT_NAME)
 
     # build your structure here
-    structure = get_structure_from_id("mp-149")
+    structure = get_structure_from_id("mp-149") # Silicon ID from Materials Project
 
     # generate the input files
     generate_espresso_input(
         structure,
         out_dir=project_dir,
         prefix="si",
+        like="insulator", # or "metal"; this decides what occupation scheme to use i.e. smearing (mv*) or fixed occupations;
+        xc="pbe", # exchange-correlation functional; this sets the `input_dft` variable in the input files
+        kpts=(7, 7, 7),
     )
 ```
+
+then run,
+
+```bash
+python ./src/main.py
+```
+
+
+> although phonon files are generated for functionals other than `pbe`, they are not
+> supported by Quantum ESPRESSO as of build 7.4.1 (which i used).
 
 #### running calculations.
 
 after generating the input files, you can run the calculations using
 ```bash
+
+# run relaxation calculation
+pw.x < ./<OUTPUT_DIR>/<PROJECT_NAME>/relax.in > ./<OUTPUT_DIR>/<PROJECT_NAME>/relax.out
+
+# copy the relaxed structure to scf.in and nscf.in (bottom)
 
 # run scf calculation
 pw.x < ./<OUTPUT_DIR>/<PROJECT_NAME>/scf.in > ./<OUTPUT_DIR>/<PROJECT_NAME>/scf.out
@@ -54,32 +73,29 @@ dos.x < ./<OUTPUT_DIR>/<PROJECT_NAME>/dos.in > ./<OUTPUT_DIR>/<PROJECT_NAME>/dos
 ph.x < ./<OUTPUT_DIR>/<PROJECT_NAME>/ph.in > ./<OUTPUT_DIR>/<PROJECT_NAME>/ph.out
 ```
 
-#### checking calculation progress.
+> you can check calculation progress by running `tail -f ./<OUTPUT_DIR>/<PROJECT_NAME>/<calculation_type>.out`
+> in a separate terminal, where `<calculation_type>` is one of `scf`, `nscf`, `dos` or `ph`.
 
-run the following command in a separate terminal to monitor the output of
+#### post-processing.
+
+after running the calculations, you can post-process the results using
 ```bash
-# calculation type = scf, nscf, dos or ph
-tail -f ./<OUTPUT_DIR>/<PROJECT_NAME>/<calculation_type>.out
+python ./src/process.py
 ```
+this will generate `./<OUTPUT_DIR>/<PROJECT_NAME>/processed.json` file which contains
+useful informaton extracted from scf and nscf calculations.
 
-#### switching exchange-correlation functional.
+#### tips.
 
-the files are generated with no exchange-correlation functional
-specified. this means that the default functional of PBE is used
-by Quantum ESPRESSO. to switch to another functional, you can
-add these to `nscf.in` & `scf.in` files under the `&system` card
-before running the calculations:
-```bash
-   input_dft        = 'hse'
-   exx_fraction     = 0.25
-   screening_parameter = 0.106
-   ecutfock         = 120
-```
-
-`hse` should give you much accurate results at the cost of really long
-calculation time. `pbe` is fast but not accurate. i don't recommend
-simulating beyond 4 total atoms with `hse` functional and beyond
-32 total atoms with `pbe` functional.
+- you can use `mpirun -np <num_procs> pw.x < ./<OUTPUT_DIR>/<PROJECT_NAME>/scf.in > ./<OUTPUT_DIR>/<PROJECT_NAME>/scf.out`
+to run the calculations in parallel on multiple processors.
+- get your pseudopotentials from [here](https://pseudopotentials.quantum-espresso.org/).
+- although phonon calculations are always generated, they are not supported by Quantum ESPRESSO as of
+build 7.4.1 (which i used) for exchange-functionals other than `pbe`.
+- certain exchange-functionals (eg. SCAN) require norm-conserving pseudopotentials to be used. i used
+`sg15_oncv_upf_2020-02-06.tar.gz SG15 ONCV potentials in UPF format` from [SG15 ONCV potentials](http://www.quantum-simulation.org/potentials/sg15_oncv/)
+for this purpose. you are still required to rename them and update your `.env` file if working with such
+functionals.
 
 ### license.
 

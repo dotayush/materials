@@ -17,7 +17,6 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import math
 import os
 
 
@@ -29,49 +28,28 @@ from typing import Union
 from ase.atoms import Atoms
 from ase.calculators.espresso import EspressoProfile
 from ase.io import write
-from dotenv import load_dotenv
 from mp_api.client import MPRester
 from pymatgen.analysis.interfaces.substrate_analyzer import SubstrateAnalyzer
-from pymatgen.core import Site, Structure
+from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.io.ase import AseAtomsAdaptor
 
+from shared import (
+    FUNCTIONAL,
+    MP_API_KEY,
+    SAVED_STRUCTURES_DIR,
+    PSEUDOPOTENTIALS_DIR,
+    PROJECT_NAME,
+    setup_output_project
+)
 
 # matplotlib backend for plotting
 matplotlib.use("Qt5Agg")
-
-# load environment variables
-_ = load_dotenv()
-MP_API_KEY = os.getenv("MP_API_KEY")
-
-# directories for saved structures and pseudopotentials
-SAVED_STRUCTURES_DIR = os.path.join(
-    os.getcwd(), os.getenv("SAVED_STRUCTURES_DIR", "./saved_structures")
-)
-PSEUDOPOTENTIALS_DIR = os.path.join(os.getcwd(), os.getenv("PSEUDOS_DIR", "./pseudos"))
-OUTPUT_DIR = os.path.join(os.getcwd(), os.getenv("OUTPUT_DIR", "out"))
-PROJECT_NAME = os.getenv("PROJECT_NAME", "default_project")
-
 espresso_profile = EspressoProfile(
     command="mpirun -np 4 pw.x", pseudo_dir=PSEUDOPOTENTIALS_DIR
 )
 
 QEInputType = dict[str, Union[str, float, int]]
-
-
-def setup_output_project(project_name: str) -> str:
-    """Setup the output directory for the project. If the directory already exists and has contents, it will error."""
-    project_dir = os.path.join(os.getcwd(), OUTPUT_DIR, project_name)
-    print(f"info: setting up project directory: {project_dir}")
-
-    # error if the project directory already exists and has contents
-    if os.path.exists(project_dir) and len(os.listdir(project_dir)) > 0:
-        raise FileExistsError(
-            f"error: project directory {project_dir} already exists and has contents. please remove the directory or choose a different project name."
-        )
-
-    os.makedirs(project_dir, exist_ok=True)
-    return project_dir
 
 
 def print_structure(structures, title=None):
@@ -149,6 +127,7 @@ def get_structure_from_id(mp_id: str) -> Structure:
             )
 
 
+# todo: unused but implemented
 def substrate_compatibility(structure_a: Structure, structure_b: Structure):
     """Calculate the match of two structures as a substrate and film pair."""
     analyzer = SubstrateAnalyzer()
@@ -160,7 +139,7 @@ def substrate_compatibility(structure_a: Structure, structure_b: Structure):
     # return the match with the lowest von mises strain
     return min(matches, key=lambda x: x.strain.von_mises_strain)
 
-
+# todo: unused but implemented
 def find_optimal_scale(required_scale: float, max_scale: int = 10):
     """Find scale factors (i, j, k) such that:
     - i * j * k >= required_scale
@@ -230,55 +209,63 @@ def create_doped_structure(
     #     np.diag([1, 1, 1]),
     # )
 
-    # fix labels
-    labelled_supercell = fix_labels(supercell)
-
     data_str = f"{scale}({scale[0] * scale[1] * scale[2]})_{t_nat}/{c_nat}_{required_scale:.3f}_{len(supercell)}_{(1 / s_nat) * 100:.3f}"
 
-    return labelled_supercell, data_str
+    return supercell, data_str
 
 
 def generate_espresso_input(
-    struct: Structure, out_dir: str, prefix: str, kpts=None, nbnd=None
+        struct: Structure, out_dir: str, prefix: str, like: str, xc: str, kpts=None, nbnd=None
 ):
-    """Generate Quantum ESPRESSO input files for a given structure.
-    This includes SCF, NSCF, and DOS input files."""
     atoms = AseAtomsAdaptor.get_atoms(struct)
     if not isinstance(atoms, Atoms):
         raise ValueError(
             f"error: expected a single Atoms object, but got {type(atoms)}"
         )
     atoms.wrap()
-
-    # this is why we rename the pseudopotentials to lowercase in the first place with rename_psuedos.py
     pseudopotentials = {
         s: f"{s.lower()}.UPF" for s in set(atoms.get_chemical_symbols())
     }
     nat = len(atoms)
 
-    # ---- handle SCF input generation ----
+    # base parameters
     control: QEInputType = {
-        "calculation": "scf",  # default to SCF calculation
         "prefix": prefix,  # use the base name of the cif file as prefivx
         "pseudo_dir": PSEUDOPOTENTIALS_DIR,
         "outdir": out_dir,
-        "verbosity": "high",
+        "verbosity": "high", # this  is required to extract occupation numbers, else bandgap calculation fails
         "tstress": True,
         "tprnfor": True,
     }
     system: QEInputType = {
+        "nbnd": nbnd or 32,
         "nat": nat,
         "ecutwfc": 30,
         "ecutrho": 120,
-        "occupations": "smearing",  # default to smearing for SCF
-        "smearing": "marzari-vanderbilt",  # default smearing type
-        "degauss": 0.01,  # default smearing width
-        "nosym": True,  # disable symmetry for SCF
     }
     electrons: QEInputType = {
         "conv_thr": 1e-8,
         "mixing_beta": 0.4,
     }
+
+
+    # update base paramters
+    if like == "metal":
+        system.update({"smearing": "mv", "degauss": 0.01, "occupations": "smearing"})
+    elif like == "insulator":
+        system.update({"occupations": "fixed"})
+    if xc:
+        system.update({"input_dft": xc.upper()})  # set exchange-correlation functional
+    else:
+        system.update({"input_dft": "PBE"})
+
+    # ---- handle SCF input generation ----
+    control.update(
+        {
+            "calculation": "scf",  # set calculation type to SCF
+            "wf_collect": True,  # collect wavefunctions for NSCF
+        }
+    )
     input_file = os.path.join(out_dir, "scf.in")
     write(
         input_file,
@@ -292,7 +279,25 @@ def generate_espresso_input(
     print(
         f"info: generated SCF input file at {os.path.relpath(input_file, os.getcwd())}"
     )
-
+    # ---- handle NSCF input generation ----
+    control.update(
+        {
+            "calculation": "nscf",
+        }
+    )
+    input_file = os.path.join(out_dir, "nscf.in")
+    write(
+        input_file,
+        atoms,
+        format="espresso-in",
+        pseudopotentials=pseudopotentials,
+        ppdir=PSEUDOPOTENTIALS_DIR,
+        input_data={"control": control, "system": system, "electrons": electrons},
+        kpts=kpts or (4, 4, 4),  # denser k-point grid for NSCF
+    )
+    print(
+        f"info: generated NSCF input file at {os.path.relpath(input_file, os.getcwd())}"
+    )
     # ---- handle relaxation input generation ----
     control.update(
         {
@@ -318,34 +323,6 @@ def generate_espresso_input(
         f"info: generated relaxation input file at {os.path.relpath(input_file, os.getcwd())}"
     )
 
-    # ---- handle NSCF input generation ----
-    control.update(
-        {
-            "calculation": "nscf",
-        }
-    )
-    system.update(
-        {
-            "nbnd": nbnd or 4 * nat,  # number of bands, default to 4 * nat
-            "occupations": "fixed",  # use fixed occupations for NSCF
-        }
-    )
-    system.pop("smearing", None)  # remove smearing for NSCF
-    system.pop("degauss", None)  # remove degauss for NSCF
-    input_file = os.path.join(out_dir, "nscf.in")
-    write(
-        input_file,
-        atoms,
-        format="espresso-in",
-        pseudopotentials=pseudopotentials,
-        ppdir=PSEUDOPOTENTIALS_DIR,
-        input_data={"control": control, "system": system, "electrons": electrons},
-        kpts=kpts or (8, 8, 8),  # denser k-point grid for NSCF
-    )
-    print(
-        f"info: generated NSCF input file at {os.path.relpath(input_file, os.getcwd())}"
-    )
-
     # ---- handle DOS input generation ----
     dos_data: QEInputType = {
         "prefix": prefix,
@@ -355,23 +332,12 @@ def generate_espresso_input(
         "emax": 10,
         "DeltaE": 0.01,
     }
-    # build dos string
-    dos_str = "\n".join(
-        [
-            f"{key} = '{value}'"
-            if isinstance(value, str)
-            else f"{key} = .{str(value).lower()}"
-            if isinstance(value, bool)
-            else f"{key} = {value}"
-            for key, value in dos_data.items()
-        ]
-    )
-    dos_str = f"&DOS\n{dos_str}\n/\n"
+    dos_str = f"&DOS\n{dict_to_str(dos_data)}\n/\n"
     input_file = os.path.join(out_dir, "dos.in")
     with open(input_file, "w") as f:
         f.write(dos_str)
     print(
-        f"info: Generated DOS input file at {os.path.relpath(input_file, os.getcwd())}"
+        f"info: generated DOS input file at {os.path.relpath(input_file, os.getcwd())}"
     )
 
     # ---- handle phonon input generation ----
@@ -384,45 +350,53 @@ def generate_espresso_input(
         "nq2": 4,  # number of q-points in the second direction
         "nq3": 4,  # number of q-points in the third direction
     }
-    # build phonon string
-    phonon_str = "\n".join(
+    if like == "insulator":
+        phonon_data.update(
+            {
+                "epsil": True,  # calculate dielectric properties
+                "ldisp": True,
+            }
+        )
+    phonon_str = f"&inputph\n{dict_to_str(phonon_data)}\n/\n"
+    input_file = os.path.join(out_dir, "ph.in")
+    with open(input_file, "w") as f:
+        f.write(phonon_str)
+    print(
+        f"info: generated phonon input file at {os.path.relpath(input_file, os.getcwd())}"
+    )
+
+
+def dict_to_str(input_dict: dict) -> str:
+    """convert a dictionary to a string representation for QE input files."""
+    return "\n".join(
         [
             f"{key} = '{value}'"
             if isinstance(value, str)
             else f"{key} = .{str(value).lower()}."
             if isinstance(value, bool)
             else f"{key} = {value}"
-            for key, value in phonon_data.items()
+            for key, value in input_dict.items()
         ]
     )
-    phonon_str = f"&inputph\n{phonon_str}\nldisp = .true.\n/\n"
-    input_file = os.path.join(out_dir, "ph.in")
-    with open(input_file, "w") as f:
-        f.write(phonon_str)
-    print(
-        f"info: Generated phonon input file at {os.path.relpath(input_file, os.getcwd())}"
-    )
-
 
 def main():
-    project_dir = setup_output_project(PROJECT_NAME) # generate output directory for the project
+    # generate output directory
+    project_dir = setup_output_project(PROJECT_NAME)
 
+    # build your structure here
     structure = get_structure_from_id("mp-149")
-    # structure.make_supercell(
-    #     np.diag([2, 2, 2])
-    # )  # make a 2x1x1 supercell of Si i.e. # 16 Si atoms
-    # structure.replace(
-    #     0, "P"
-    # )  # replace the first Si atom with P; this means 1/16 P doping or 6.25% P doping in Si crystal
-    # print_structure([structure])
+    print_structure([structure])
     structure.to(filename=os.path.join(project_dir, "supercell.cif"), fmt="cif")
 
-    generate_espresso_input( # generate QE input files for the structure
+    # generate input files for Quantum ESPRESSO
+    generate_espresso_input(
         structure,
         out_dir=project_dir,
         prefix="si",
+        like="insulator",
+        xc=FUNCTIONAL, # i extract the functional from the project name since my project name is in the format "project_functional" but you can change it to whatever you want
+        kpts=(7, 7, 7),
     )
 
 
-if __name__ == "__main__":
-    main()
+main()

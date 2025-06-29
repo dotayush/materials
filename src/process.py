@@ -17,16 +17,11 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+import json
 import numpy as np
 import re
 import os
-import matplotlib.pyplot as plt
-from scipy.constants import k
-from dotenv import load_dotenv
-
-_ = load_dotenv()
-PROJECT_NAME = os.getenv("PROJECT_NAME", "default_project")
-OUTPUT_DIR = os.path.join(os.getcwd(), os.getenv("OUTPUT_DIR", "out"))
+from shared import FUNCTIONAL, OUTPUT_DIR, PROJECT_NAME
 
 BOHR_TO_ANG = 0.529177249  # bohr radius in angstroms
 AVAGADRO = 6.02214076e23  # Avogadro's number'
@@ -243,20 +238,19 @@ def find_effective_mass(k_cart, energies, edge_idx):
     next_idx = (edge_idx + 1) if (edge_idx + 1 < len(energies)) else edge_idx
     prev_idx = (edge_idx - 1) if (edge_idx - 1 >= 0) else edge_idx
 
-    print(f"gen:info: edge_idx={edge_idx}, next_idx={next_idx}, prev_idx={prev_idx}, len(energies)={len(energies)}")
-
     center_energy = energies[edge_idx]
     next_energy = energies[next_idx]
     prev_energy = energies[prev_idx]
 
-    dk = np.linalg.norm(k_cart[next_idx] - k_cart[edge_idx])  * 1e10  # 1e10 for A -> m conversion
-    d2E = (next_energy + prev_energy - 2 * center_energy) * EV_TO_J # EV_TO_J for eV -> J conversion
-
-    print(f"gen:info: dk={dk}, d2E={d2E}, center_energy={center_energy}, next_energy={next_energy}, prev_energy={prev_energy}")
+    dk = (
+        np.linalg.norm(k_cart[next_idx] - k_cart[edge_idx]) * 1e10
+    )  # 1e10 for A -> m conversion
+    d2E = (
+        next_energy + prev_energy - 2 * center_energy
+    ) * EV_TO_J  # EV_TO_J for eV -> J conversion
 
     # formulae: m_eff_kg = (hbar^2 * dk^2) / d2E
     m_eff_kg = abs((REDUCED_PLANCKS_CONSTANT**2 * dk**2) / d2E)
-    print(f"gen:info: m_eff_kg={m_eff_kg}")
 
     # in m_e
     return m_eff_kg / M_ELECTRON
@@ -266,10 +260,10 @@ def intrinsic_carriers(cbm_energy_eV, vbm_energy_eV, m_eff_e, m_eff_h, T=300.0):
     BOLTZMANN_CONSTANT_EV = BOLTZMANN_CONSTANT / EV_TO_J  # J/K to eV/K
     Ei = 0.5 * (cbm_energy_eV + vbm_energy_eV) + (
         0.75 * BOLTZMANN_CONSTANT_EV * T * np.log(m_eff_h / m_eff_e)
-    ) # intrinsic energy level in eV
+    )  # intrinsic energy level in eV
 
-    m_e = m_eff_e * M_ELECTRON # back to kg
-    m_h = m_eff_h * M_ELECTRON # back to kg
+    m_e = m_eff_e * M_ELECTRON  # back to kg
+    m_h = m_eff_h * M_ELECTRON  # back to kg
 
     Nc = 2 * ((2 * np.pi * m_e * BOLTZMANN_CONSTANT * T) / (PLANCKS_CONSTANT**2)) ** 1.5
     Nv = 2 * ((2 * np.pi * m_h * BOLTZMANN_CONSTANT * T) / (PLANCKS_CONSTANT**2)) ** 1.5
@@ -315,6 +309,10 @@ class SCF:
         self.constituents = {}  # what atom and how  much of it is present in the unit cell
         self.density = 0.0  # density in g/cm^3
         self.mass = 0.0  # total mass in grams
+        self.effective_mass_n = 0.0  # effective mass in m_e
+        self.effective_mass_p = 0.0  # effective mass in m_e
+        self.carrier_concentration_n = 0.0  # carrier concentration in cm^-3
+        self.carrier_concentration_p = 0.0  # carrier concentration in cm^-3
         if not os.path.exists(self.file):
             raise FileNotFoundError(
                 f"scf:error: scf.out file was not found at address: {self.file}"
@@ -521,78 +519,27 @@ class SCF:
                 self.volume * 1e-24
             )  # convert volume from angstrom^3 to cm^3
 
-    def print_scf(self):
-        print("-" * 30 + " SCF DATA " + "-" * 30)
-        print(f"crystal index = {self.crystal_index}")
-        print(f"crystal type = {self.crystal_type}")
-        print(f"alat = {self.alat:.4f} angstrom)")
-        print(f"fermi energy = {self.E_F} eV")
-        print(f"celldm = {self.celldm.tolist()}")
-        print("crystal axes (angstrom):")
-        for i in range(3):
-            print(f"\ta({i + 1}) = {self.crystal_axis[i].tolist()}")
-        print("reciprocal crystal axes (1/angstorm):")
-        for i in range(3):
-            print(f"\tb({i + 1}) = {self.reciprocal_axis[i].tolist()}")
-        print(f"total atoms in unit cell = {self.total_atoms}")
-        print(f"total electrons in unit cell = {self.total_electrons}")
-        print(f"total atom types in unit cell = {self.total_atom_types}")
-        print("atom types:")
-        for atom, mass in self.atom_types.items():
-            print(f"\t{atom}: {mass} a.u.")
-        print(f"total energy = {self.total_energy} eV")
-        print(f"internal energy = {self.internal_energy} eV")
-        print(f"number of k-points = {self.kpts}")
-        print(f"number of kohn-sham states = {self.ks_states}")
-        print(f"valence band maximum = {self.vbm} eV")
-        print(f"conduction band minimum = {self.cbm} eV")
-        print(f"band gap = {self.bandgap} eV")
-        print("local maxima (VBM):")
-        print(f"\t{self.max_local.tolist()}")
-        print("local minima (CBM):")
-        print(f"\t{self.min_local.tolist()}")
-        print("stress tensor (GPa):")
-        for i in range(3):
-            print(f"\tx{i + 1} = {self.stress_tensor[i].tolist()}")
-        print(f"hydrostatic/average pressure = {self.hydrostatic_pressure:.4f} GPa")
-        print(f"von Mises stress = {self.von_mieses:.4f} GPa")
-        print("constituents in the unit cell:")
-        for atom, count in self.constituents.items():
-            print(f"\t{atom}: {count} atoms")
-        print(f"unit cell volume = {self.volume:.4f} angstrom^3")
-        print(f"unit cell density = {self.density:.4f} g/cm^3")
-        print(f"unit cell mass = {self.mass} g")
-        print("region information:")
-        print(
-            "\tatoms/cm^3 = {:.2e} atoms/cm^3".format(
-                self.total_atoms / (self.volume * 1e-24)
+            k_cart = self.kpoint_weights @ self.reciprocal_axis
+            self.effective_mass_n = find_effective_mass(
+                k_cart,
+                self.min_local,
+                np.argmin(self.min_local),
             )
-        )  # convert volume from angstrom^3 to cm^3
-        print(
-            "\telectrons/cm^3 = {:.2e} electrons/cm^3".format(
-                self.total_electrons / (self.volume * 1e-24)
+            self.effective_mass_p = find_effective_mass(
+                k_cart,
+                self.max_local,
+                np.argmax(self.max_local),
             )
-        )  # convert volume from angstrom^3 to cm^3
-        print(
-            "\tatoms/um^3 = {:.2e} atoms/um^3".format(
-                self.total_atoms / (self.volume * 1e-12)
+
+            # carrier concentration
+            EV_i, self.carrier_concentration_n, self.carrier_concentration_p = (
+                intrinsic_carriers(
+                    cbm_energy_eV=self.cbm,
+                    vbm_energy_eV=self.vbm,
+                    m_eff_e=self.effective_mass_n,
+                    m_eff_h=self.effective_mass_p,
+                )
             )
-        )  # convert volume from angstrom^3 to um^3
-        print(
-            "\telectrons/um^3 = {:.2e} electrons/um^3".format(
-                self.total_electrons / (self.volume * 1e-12)
-            )
-        )  # convert volume from angstrom^3 to um^3
-        print(
-            "\tatoms/nm^3 = {:.2f} atoms/nm^3".format(
-                self.total_atoms / (self.volume * 1e-3)
-            )
-        )  # convert volume from angstrom^3 to nm^3
-        print(
-            "\telectrons/nm^3 = {:.2f} electrons/nm^3".format(
-                self.total_electrons / (self.volume * 1e-3)
-            )
-        )  # convert volume from angstrom^3 to nm^3
 
 
 class NonSCF:
@@ -657,7 +604,8 @@ class NonSCF:
                 for i in range(3):
                     for j in range(3):
                         self.crystal_axis[i, j] = float(m[i][j + 1])
-            self.crystal_axis *= BOHR_TO_ANG * self.alat  # convert to angstroms
+            if self.crystal_index == 0:
+                self.crystal_axis *= self.alat  # convert to angstroms
 
             # reciprocal axis
             m = re.findall(
@@ -668,9 +616,10 @@ class NonSCF:
                 for i in range(3):
                     for j in range(3):
                         self.reciprocal_axis[i, j] = float(m[i][j + 1])
-            self.reciprocal_axis *= BOHR_TO_ANG * (
-                2 * np.pi / self.alat
-            )  # convert to reciprocal angstroms
+            if self.crystal_index == 0:
+                self.reciprocal_axis *= (
+                    2 * np.pi / self.alat
+                )  # convert to reciprocal angstroms
 
             # k-points
             m = re.search(r"number of k points\s*=\s*(\d+)", nscf_text)
@@ -728,53 +677,64 @@ class NonSCF:
                 )
             )
 
-    def print_nscf(self):
-        print("-" * 30 + " NSCF DATA " + "-" * 30)
-        print(f"number of k-points = {self.kpts}")
-        print(f"number of kohn-sham states = {self.ks_states}")
-        print(f"valence band maximum = {self.vbm} eV")
-        print(f"conduction band minimum = {self.cbm} eV")
-        print(f"band gap = {self.bandgap} eV")
-        print("local maxima (VBM):")
-        print(f"\t{self.max_local.tolist()}")
-        print("local minima (CBM):")
-        print(f"\t{self.min_local.tolist()}")
-        print(f"effective mass (cbm/electrons) = {self.effective_mass_n} m_e")
-        print(f"effective mass (vbm/holes) = {self.effective_mass_p} m_e")
-        print(
-            f"carrier concentration (cbm/electrons/n) = {self.carrier_concentration_n:.2e} cm^-3"
-        )
-        print(
-            f"carrier concentration (vbm/holes/p) = {self.carrier_concentration_p:.2e} cm^-3"
-        )
-
 
 class Compound:
-    def __init__(self, project_dir: str, scf=True, nscf=True):
-        if not os.path.exists(project_dir):
-            raise FileNotFoundError(
-                f"compound:error project directory {project_dir} does not exist."
-            )
-        if scf and not os.path.exists(os.path.join(project_dir, "scf.out")):
-            raise FileNotFoundError(
-                f"compound:error scf.out file does not exist in {project_dir}."
-            )
-        else:
-            self.scf = SCF(project_dir=project_dir)
-        if nscf and not os.path.exists(os.path.join(project_dir, "nscf.out")):
-            raise FileNotFoundError(
-                f"compound:error nscf.out file does not exist in {project_dir}."
-            )
-        else:
-            self.nscf = NonSCF(project_dir=project_dir)
+    def __init__(self, scf=True, nscf=True):
+        self.project_name = PROJECT_NAME
+        self.functional = FUNCTIONAL
+        self.project_dir = os.path.join(OUTPUT_DIR, self.project_name)
+        self.scf = SCF(project_dir=self.project_dir)
+        self.nscf = NonSCF(project_dir=self.project_dir)
+
+    def present(self):
+        return {
+            "project": self.project_name,
+            "xc_used": self.functional,
+            "scf": {
+                "E_F_(eV)": self.scf.E_F,
+                "celldm": self.scf.celldm.tolist(),
+                "crystal_axis_(angstrom)": self.scf.crystal_axis.tolist(),
+                "reciprocal_axis_(1/angstrom)": self.scf.reciprocal_axis.tolist(),
+                "alat_(angstrom)": self.scf.alat,
+                "crystal_index": self.scf.crystal_index,
+                "crystal_type": self.scf.crystal_type,
+                "volume_(angstrom^3)": self.scf.volume,
+                "total_atoms": self.scf.total_atoms,
+                "total_electrons": self.scf.total_electrons,
+                "total_elements": self.scf.total_atom_types,
+                "total_kpoints": self.scf.kpts,
+                "total_kohnsham_states": self.scf.ks_states,
+                "density_(g/cm^3)": self.scf.density,
+                "elements": self.scf.atom_types,
+                "elements_count": self.scf.constituents,
+                "total_energy_(eV)": self.scf.total_energy,
+                "internal_energy_(eV)": self.scf.internal_energy,
+                "vbm_(eV)": self.scf.vbm,
+                "cbm_(eV)": self.scf.cbm,
+                "bandgap_(eV)": self.scf.bandgap,
+                "stress_tensor": self.scf.stress_tensor.tolist(),
+                "hydrostatic_pressure_(GPa)": self.scf.hydrostatic_pressure,
+                "von_mieses_stress_(GPa)": self.scf.von_mieses,
+                "mass_(g)": self.scf.mass,
+            },
+            "nscf": {
+                "vbm_(eV)": self.nscf.vbm,
+                "cbm_(eV)": self.nscf.cbm,
+                "bandgap_(eV)": self.nscf.bandgap,
+                "total_kpoints": self.nscf.kpts,
+                "total_kohnsham_states": self.nscf.ks_states,
+                "eff_mass_n_(me)": self.nscf.effective_mass_n,
+                "eff_mass_p_(me)": self.nscf.effective_mass_p,
+                "car_conc_n_(cm^-3)": self.nscf.carrier_concentration_n,
+                "car_conc_p_(cm^-3)": self.nscf.carrier_concentration_p,
+            },
+        }
+
+    def save(self):
+        output_file = os.path.join(self.project_dir, "processed.json")
+        with open(output_file, "w") as f:
+            json.dump(self.present(), f, indent=4, default =lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
+        print(f"process:info: compound data saved to {output_file}")
 
 
-def main():
-    PROJECT_DIR = os.path.join(OUTPUT_DIR, PROJECT_NAME)
-    compound = Compound(project_dir=PROJECT_DIR)
-    compound.scf.print_scf()
-    compound.nscf.print_nscf()
-
-
-if __name__ == "__main__":
-    main()
+Compound().save()
