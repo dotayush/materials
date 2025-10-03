@@ -18,6 +18,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import json
+from matplotlib.lines import lineStyles
 import numpy as np
 import re
 import os
@@ -158,26 +159,28 @@ def process_bands(kpts_count: int = 0, kohn_sham_count: int = 0, filepath: str =
     return kpts, bands, occupations
 
 
-def process_gap(kpts, bands, occupations):
-    max_local = np.zeros(kpts)
-    min_local = np.zeros(kpts)
+def process_gap(kpoints, band_count, band_data, occupation_data):
+    max_local = [(float("-inf"), -1)] * kpoints   # (value, band_index)
+    min_local = [(float("inf"), -1)] * kpoints
 
-    for i in range(kpts):
-        # find local maxima for valence band maximum
-        vbm_candidates = bands[i, occupations[i] > VBM_THRESHOLD]
-        if vbm_candidates.size > 0:
-            max_local[i] = np.max(vbm_candidates)
-        else:
-            max_local[i] = -np.inf
-        # find local minima for conduction band minimum
-        cbm_candidates = bands[i, occupations[i] < CBM_THRESHOLD]
-        if cbm_candidates.size > 0:
-            min_local[i] = np.min(cbm_candidates)
-        else:
-            min_local[i] = np.inf
+    # this doesn't look right...
+    # shape: (kpoint, band_energy_at_kpoint)
+    # shape: (kpoint, band_occupation_at_kpoint)
 
-    vbm = np.max(max_local)
-    cbm = np.min(min_local)
+    for i in range(kpoints):
+        for j in range(band_count):
+            if occupation_data[i, j] >= VBM_THRESHOLD:
+                if band_data[i, j] > max_local[i][0]:
+                    max_local[i] = (band_data[i, j], j)
+            if occupation_data[i, j] <= CBM_THRESHOLD:
+                if min_local[i][0] == 0.0 or band_data[i, j] < min_local[i][0]:
+                    min_local[i] = (band_data[i, j], j)
+
+    # 172 kpoints, 32 bands
+    energies_only_vbm = [val[0] for val in max_local]
+    energies_only_cbm = [val[0] for val in min_local]
+    vbm = np.max(energies_only_vbm)
+    cbm = np.min(energies_only_cbm)
     bandgap = cbm - vbm
 
     return max_local, min_local, vbm, cbm, bandgap
@@ -232,47 +235,56 @@ def process_stress_tensor(filepath: str = ""):
         von_mieses,
     )  # return stress tensor and hydrostatic pressure in GPa
 
+def effective_mass_1d(k_cart, bands, band_index, edge_idx, window=0.2, direction=None):
+    if direction is not None:
+        # use projection if explicit direction is given (for 3D grids)
+        direction = np.array(direction) / np.linalg.norm(direction)
+        k_scalar = k_cart @ direction
+    else:
+        # assume bandstructure path -> use cumulative distance
+        dk = np.linalg.norm(np.diff(k_cart, axis=0), axis=1)
+        k_scalar = np.concatenate(([0], np.cumsum(dk)))
 
-def find_effective_mass(k_cart, energies, edge_idx):
-    # get the two neighbors
-    next_idx = (edge_idx + 1) if (edge_idx + 1 < len(energies)) else edge_idx
-    prev_idx = (edge_idx - 1) if (edge_idx - 1 >= 0) else edge_idx
+    # energies for the chosen band
+    E_vals = bands[:, band_index]
 
-    center_energy = energies[edge_idx]
-    next_energy = energies[next_idx]
-    prev_energy = energies[prev_idx]
+    # shift reference to band edge
+    k_shift = k_scalar - k_scalar[edge_idx]
+    E_shift = E_vals - E_vals[edge_idx]
 
-    dk = (
-        np.linalg.norm(k_cart[next_idx] - k_cart[edge_idx]) * 1e10
-    )  # 1e10 for A -> m conversion
-    d2E = (
-        next_energy + prev_energy - 2 * center_energy
-    ) * EV_TO_J  # EV_TO_J for eV -> J conversion
+    # select only nearby points
+    mask = np.abs(k_shift) < window
+    if np.count_nonzero(mask) < 3:
+        # fallback: always include 3 nearest neighbors
+        nearest = np.argsort(np.abs(k_shift))[:5]  # edge + 4 neighbors
+        mask = np.zeros_like(k_shift, dtype=bool)
+        mask[nearest] = True
 
-    # formulae: m_eff_kg = (hbar^2 * dk^2) / d2E
-    m_eff_kg = abs((REDUCED_PLANCKS_CONSTANT**2 * dk**2) / d2E)
+    k_fit = k_shift[mask]
+    E_fit = E_shift[mask]
 
-    # in m_e
-    return m_eff_kg / M_ELECTRON
+    # quadratic fit: E ≈ a k²
+    coeffs = np.polyfit(k_fit, E_fit, 2)
+    a = coeffs[0]
+    a_si = a * EV_TO_J * (A_TO_M**2)  # convert eV·Å² → J·m²
+
+    # m* = ħ² / (2a)
+    m_kg = (REDUCED_PLANCKS_CONSTANT**2) / (2 * a_si)
+    return abs(m_kg) / M_ELECTRON  # return in units of m_e
 
 
-def intrinsic_carriers(cbm_energy_eV, vbm_energy_eV, m_eff_e, m_eff_h, T=300.0):
-    BOLTZMANN_CONSTANT_EV = BOLTZMANN_CONSTANT / EV_TO_J  # J/K to eV/K
-    Ei = 0.5 * (cbm_energy_eV + vbm_energy_eV) + (
-        0.75 * BOLTZMANN_CONSTANT_EV * T * np.log(m_eff_h / m_eff_e)
-    )  # intrinsic energy level in eV
-
-    m_e = m_eff_e * M_ELECTRON  # back to kg
-    m_h = m_eff_h * M_ELECTRON  # back to kg
-
-    Nc = 2 * ((2 * np.pi * m_e * BOLTZMANN_CONSTANT * T) / (PLANCKS_CONSTANT**2)) ** 1.5
-    Nv = 2 * ((2 * np.pi * m_h * BOLTZMANN_CONSTANT * T) / (PLANCKS_CONSTANT**2)) ** 1.5
-
-    n = Nc * np.exp(-(cbm_energy_eV - Ei) * EV_TO_J / (BOLTZMANN_CONSTANT * T))
-    p = Nv * np.exp(-(Ei - vbm_energy_eV) * EV_TO_J / (BOLTZMANN_CONSTANT * T))
-
+def intrinsic_carriers(effective_electron_mass, effective_hole_mass, bandgap, T=300.0):
+    Nc = 2 * ((2 * np.pi *  (effective_electron_mass * M_ELECTRON) * BOLTZMANN_CONSTANT * T) / (PLANCKS_CONSTANT**2)) ** 1.5
+    Nv = 2 * ((2 * np.pi * (effective_hole_mass * M_ELECTRON) * BOLTZMANN_CONSTANT * T) / (PLANCKS_CONSTANT**2)) ** 1.5
+    ni = np.sqrt(Nc * Nv) * np.exp(-bandgap*EV_TO_J / (2*BOLTZMANN_CONSTANT*T))
     # convert to cm^-3
-    return Ei, n / 1e6, p / 1e6
+    return Nc * 1e-6, Nv * 1e-6, ni * 1e-6
+
+def carrier_concentrations(E_F, vbm, cbm, nc, nv, T=300.0):
+    n = (nc/1e-6) * np.exp((-(cbm - E_F) * EV_TO_J) / (BOLTZMANN_CONSTANT * T))
+    p = (nv/1e-6) * np.exp((-(E_F - vbm) * EV_TO_J) / (BOLTZMANN_CONSTANT * T))
+    return n * 1e-6, p * 1e-6  # convert to cm^-3
+
 
 
 class SCF:
@@ -297,8 +309,8 @@ class SCF:
         self.bands = np.zeros((0, 0))  # kohn-sham bands
         self.occupation = np.zeros((0, 0))  # kohn-sham occupation numbers
         self.kpoint_weights = np.zeros((0, 3))  # k-point weights
-        self.max_local = np.zeros(0)  # local maxima for VBM
-        self.min_local = np.zeros(0)  # local minima for CBM
+        self.max_local = np.empty(0, dtype=object)  # local maxima for VBM
+        self.min_local = np.empty(0, dtype=object)  # local minima for CBM
         self.vbm = 0.0  # valence band maximum in eV
         self.cbm = 0.0  # conduction band minimum in eV
         self.bandgap = 0.0  # band gap energy in eV
@@ -309,10 +321,13 @@ class SCF:
         self.constituents = {}  # what atom and how  much of it is present in the unit cell
         self.density = 0.0  # density in g/cm^3
         self.mass = 0.0  # total mass in grams
-        self.effective_mass_n = 0.0  # effective mass in m_e
-        self.effective_mass_p = 0.0  # effective mass in m_e
-        self.carrier_concentration_n = 0.0  # carrier concentration in cm^-3
-        self.carrier_concentration_p = 0.0  # carrier concentration in cm^-3
+        self.effective_electron_mass = 0.0  # effective mass in units of m_e
+        self.effective_hole_mass = 0.0  # effective mass in units of m_e
+        self.dos_nc = 0  # number of conduction band states in effective DOS calc (cm^-3)
+        self.dos_nv = 0  # number of valence band states in effective DOS calc (cm^-3)
+        self.electron_concentration = 0.0  # electron concentration (cm^-3)
+        self.hole_concentration = 0.0  # hole concentration (cm^-3)
+        self.instrinsic_concentration = 0.0  # carrier concentration (cm^-3)
         if not os.path.exists(self.file):
             raise FileNotFoundError(
                 f"scf:error: scf.out file was not found at address: {self.file}"
@@ -474,7 +489,12 @@ class SCF:
                 self.vbm,
                 self.cbm,
                 self.bandgap,
-            ) = process_gap(self.kpts, self.bands, self.occupation)
+            ) = process_gap(self.kpts, self.ks_states, self.bands, self.occupation)
+
+            # if fermi energy was not found, set it to mid-gap
+            if self.E_F == 0.0:
+                if self.bandgap > 0:
+                    self.E_F = (self.vbm + self.cbm) / 2
 
             # stress tensor
             (
@@ -520,49 +540,62 @@ class SCF:
             )  # convert volume from angstrom^3 to cm^3
 
             k_cart = self.kpoint_weights @ self.reciprocal_axis
-            self.effective_mass_n = find_effective_mass(
-                k_cart,
-                self.min_local,
-                np.argmin(self.min_local),
+            self.effective_electron_mass = effective_mass_1d(
+                k_cart=k_cart,
+                bands=self.bands,
+                band_index=np.argmin(self.min_local),
+                edge_idx=np.argmin(self.min_local),
             )
-            self.effective_mass_p = find_effective_mass(
-                k_cart,
-                self.max_local,
-                np.argmax(self.max_local),
+            self.effective_hole_mass = effective_mass_1d(
+                k_cart=k_cart,
+                bands=self.bands,
+                band_index=np.argmax(self.max_local),
+                edge_idx=np.argmax(self.max_local),
             )
 
             # carrier concentration
-            EV_i, self.carrier_concentration_n, self.carrier_concentration_p = (
+            self.dos_nc, self.dos_nv, self.instrinsic_concentration = (
                 intrinsic_carriers(
-                    cbm_energy_eV=self.cbm,
-                    vbm_energy_eV=self.vbm,
-                    m_eff_e=self.effective_mass_n,
-                    m_eff_h=self.effective_mass_p,
+                    effective_electron_mass=self.effective_electron_mass,
+                    effective_hole_mass=self.effective_hole_mass,
+                    bandgap=self.bandgap,
                 )
+            )
+
+            self.electron_concentration, self.hole_concentration = carrier_concentrations(
+                E_F=self.E_F,
+                vbm=self.vbm,
+                cbm=self.cbm,
+                nc=self.dos_nc,
+                nv=self.dos_nv,
             )
 
 
 class NonSCF:
     def __init__(self, project_dir: str = ""):
-        self.crystal_axis = np.zeros((3, 3))  # crystal axes in angstroms
-        self.reciprocal_axis = np.zeros((3, 3))  # reciprocal crystal axes in angstrom
-        self.alat = 0.0  # lattice parameter in bohr units
+        self.E_F = 0.0  # fermi energy in eV
+        self.crystal_axis = np.zeros((3, 3))  # crystal axes (angstrom)
+        self.reciprocal_axis = np.zeros((3, 3))  # reciprocal crystal axes (angstrom)
+        self.alat = 0.0  # lattice parameter (bohr units)
         self.crystal_index = 0  # bravais lattice index
         self.kpts = 0  # number of k-points
         self.ks_states = 0  # number of kohn-sham states
         self.bands = np.zeros((0, 0))  # kohn-sham bands
         self.occupation = np.zeros((0, 0))  # kohn-sham occupation numbers
         self.kpoint_weights = np.zeros((0, 3))  # k-point weights
-        self.max_local = np.zeros(0)  # local maxima for VBM
-        self.min_local = np.zeros(0)  # local minima for CBM
-        self.vbm = 0.0  # valence band maximum in eV
-        self.cbm = 0.0  # conduction band minimum in eV
-        self.bandgap = 0.0  # band gap energy in eV
+        self.max_local = np.zeros(0)  # local maxima for VBM (eV[])
+        self.min_local = np.zeros(0)  # local minima for CBM (eV[])
+        self.vbm = 0.0  # valence band maximum (eV)
+        self.cbm = 0.0  # conduction band minimum (eV)
+        self.bandgap = 0.0  # band gap energy (eV)
         self.file = os.path.relpath(os.path.join(project_dir, "nscf.out"))
-        self.effective_mass_n = 0.0  # effective mass in m_e
-        self.effective_mass_p = 0.0  # effective mass in m_e
-        self.carrier_concentration_n = 0.0  # carrier concentration in cm^-3
-        self.carrier_concentration_p = 0.0  # carrier concentration in cm^-3
+        self.effective_electron_mass = 0.0  # effective mass (m_e)
+        self.effective_hole_mass = 0.0  # effective mass (m_e)
+        self.dos_nc = 0  # number of conduction band states in effective DOS calc (cm^-3)
+        self.dos_nv = 0  # number of valence band states in effective DOS calc (cm^-3)
+        self.electron_concentration = 0.0  # electron concentration (cm^-3)
+        self.hole_concentration = 0.0  # hole concentration (cm^-3)
+        self.instrinsic_concentration = 0.0  # instrinsic concentration (cm^-3)
         if not os.path.exists(self.file):
             raise FileNotFoundError(
                 f"nscf:error: nscf.out file was not found at address: {self.file}"
@@ -573,6 +606,15 @@ class NonSCF:
     def process_nscf(self, filepath: str = ""):
         with open(filepath, "r") as file:
             nscf_text = file.read()
+
+            # fermi energy
+            m = re.search(r"the Fermi energy is\s+([+\-\d\.]+)\s+ev", nscf_text)
+            if m:
+                self.E_F = float(m.group(1))
+            else:
+                self.E_F = 0.0
+                print("nscf:warn: fermi energy not found.")
+
 
             # ibrav; same as SCF, not rendered
             m = re.search(r"bravais-lattice index\s*=\s*(\d+)", nscf_text)
@@ -649,33 +691,90 @@ class NonSCF:
                 self.vbm,
                 self.cbm,
                 self.bandgap,
-            ) = process_gap(self.kpts, self.bands, self.occupation)
+            ) = process_gap(self.kpts, self.ks_states, self.bands, self.occupation)
+
+            # if fermi energy was not found, set it to mid-gap
+            if self.E_F == 0.0:
+                if self.bandgap > 0:
+                    self.E_F = (self.vbm + self.cbm) / 2
 
             # cbm = np.argmin(self.min_local)
             # dk = np.linalg.norm(k_cart[cbm + 1] - k_cart[cbm])
             # print("Δk between neighbor points (Å⁻¹):", dk)
             # effective mass
             k_cart = self.kpoint_weights @ self.reciprocal_axis
-            self.effective_mass_n = find_effective_mass(
-                k_cart,
-                self.min_local,
-                np.argmin(self.min_local),
+            self.effective_electron_mass = effective_mass_1d(
+                k_cart=k_cart,
+                bands=self.bands,
+                band_index=np.argmin(self.min_local),
+                edge_idx=np.argmin(self.min_local),
             )
-            self.effective_mass_p = find_effective_mass(
-                k_cart,
-                self.max_local,
-                np.argmax(self.max_local),
+            self.effective_hole_mass = effective_mass_1d(
+                k_cart=k_cart,
+                bands=self.bands,
+                band_index=np.argmax(self.max_local),
+                edge_idx=np.argmax(self.max_local),
+            )
+
+
+            # instrinsic concentration
+            self.dos_nc, self.dos_nv, self.instrinsic_concentration = (
+                intrinsic_carriers(
+                    effective_electron_mass=self.effective_electron_mass,
+                    effective_hole_mass=self.effective_hole_mass,
+                    bandgap=self.bandgap,
+                )
             )
 
             # carrier concentration
-            EV_i, self.carrier_concentration_n, self.carrier_concentration_p = (
-                intrinsic_carriers(
-                    cbm_energy_eV=self.cbm,
-                    vbm_energy_eV=self.vbm,
-                    m_eff_e=self.effective_mass_n,
-                    m_eff_h=self.effective_mass_p,
-                )
+            self.electron_concentration, self.hole_concentration = carrier_concentrations(
+                E_F=self.E_F,
+                vbm=self.vbm,
+                cbm=self.cbm,
+                nc=self.dos_nc,
+                nv=self.dos_nv,
             )
+
+
+class Dos:
+    def __init__(self, project_dir: str = ""):
+        self.file = os.path.relpath(os.path.join(project_dir, "dos.result"))
+        #  E (eV)   dos(E)     Int dos(E) EFermi =    6.132 eV
+        self.eneriges = np.zeros(0)  # energy values in eV
+        self.dos = np.zeros(0)  # density of states values in states/eV
+        self.int_dos = np.zeros(0)  # integrated density of states in states
+        self.E_F = 0.0  # fermi energy in eV
+        if not os.path.exists(self.file):
+            raise FileNotFoundError(
+                f"dos:error: dos.result file was not found at address: {self.file}"
+            )
+        else:
+            self.process_dos(filepath=self.file)
+
+    def process_dos(self, filepath: str = ""):
+        energies = []
+        dos_vals = []
+        int_dos_vals = []
+        with open(filepath, "r") as file:
+            lines = file.readlines()
+            for line in lines:
+                if line.strip() == "" or line.startswith("#"):
+                    fermi_e = re.search(r"EFermi\s*=\s*([-+]?[0-9]*\.?[0-9]+)\s*eV", line)
+                    if fermi_e:
+                        self.E_F = float(fermi_e.group(1))
+                    continue
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                try:
+                    energies.append(float(parts[0]))
+                    dos_vals.append(float(parts[1]))
+                    int_dos_vals.append(float(parts[2]))
+                except ValueError:
+                    continue
+        self.eneriges = np.array(energies)
+        self.dos = np.array(dos_vals)
+        self.int_dos = np.array(int_dos_vals)
 
 
 class Compound:
@@ -685,6 +784,7 @@ class Compound:
         self.project_dir = os.path.join(OUTPUT_DIR, self.project_name)
         self.scf = SCF(project_dir=self.project_dir)
         self.nscf = NonSCF(project_dir=self.project_dir)
+        self.dos = Dos(project_dir=self.project_dir) if (scf and nscf) else None
 
     def present(self):
         return {
@@ -715,20 +815,78 @@ class Compound:
                 "stress_tensor": self.scf.stress_tensor.tolist(),
                 "hydrostatic_pressure_(GPa)": self.scf.hydrostatic_pressure,
                 "von_mieses_stress_(GPa)": self.scf.von_mieses,
+                "effective_electron_mass(me)": self.scf.effective_electron_mass,
+                "effective_hole_mass(me)": self.scf.effective_hole_mass,
+                "nc_dos_conduction_states(cm^-3)": self.scf.dos_nc,
+                "nv_dos_valence_states(cm^-3)": self.scf.dos_nv,
+                "electron_concentration(cm^-3)": self.scf.electron_concentration,
+                "hole_concentration(cm^-3)": self.scf.hole_concentration,
+                "intrinsic_concentration(cm^-3)": self.scf.instrinsic_concentration,
                 "mass_(g)": self.scf.mass,
             },
             "nscf": {
+                "E_F_(eV)": self.nscf.E_F,
                 "vbm_(eV)": self.nscf.vbm,
                 "cbm_(eV)": self.nscf.cbm,
                 "bandgap_(eV)": self.nscf.bandgap,
                 "total_kpoints": self.nscf.kpts,
                 "total_kohnsham_states": self.nscf.ks_states,
-                "eff_mass_n_(me)": self.nscf.effective_mass_n,
-                "eff_mass_p_(me)": self.nscf.effective_mass_p,
-                "car_conc_n_(cm^-3)": self.nscf.carrier_concentration_n,
-                "car_conc_p_(cm^-3)": self.nscf.carrier_concentration_p,
+                "effective_electron_mass(me)": self.nscf.effective_electron_mass,
+                "effective_hole_mass(me)": self.nscf.effective_hole_mass,
+                "nc_dos_conduction_states(cm^-3)": self.nscf.dos_nc,
+                "nv_dos_valence_states(cm^-3)": self.nscf.dos_nv,
+                "electron_concentration(cm^-3)": self.nscf.electron_concentration,
+                "hole_concentration(cm^-3)": self.nscf.hole_concentration,
+                "intrinsic_concentration(cm^-3)": self.nscf.instrinsic_concentration,
             },
         }
+
+    def plot_min_max_local(self):
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 6))
+        # plot points
+        if self.nscf:
+            energies_only_vbm = [val[0] for val in self.scf.max_local]
+            energies_only_cbm = [val[0] for val in self.scf.min_local]
+            plt.plot(energies_only_vbm, label="VBM local maxima", color="blue", marker='x', linestyle='None')
+            plt.plot(energies_only_cbm, label="CBM local minima", color="red", marker='o', linestyle='None')
+            plt.scatter(np.argmax(energies_only_vbm), self.scf.vbm, color="blue", s=100, label="VBM")
+            plt.scatter(np.argmin(energies_only_cbm), self.scf.cbm, color="red", s=100, label="CBM")
+            plt.axhline(y=self.scf.E_F, color="green", linestyle="--", label="Fermi Level")
+            # plot bands and wavevectors
+            for band_idx in range(self.scf.ks_states):
+                plt.plot(self.scf.bands[:, band_idx], color="black", alpha=0.5)
+            for kpt_idx in range(self.scf.kpts):
+                plt.axvline(x=kpt_idx, color="lightgray", alpha=0.5)
+
+            plt.title(f"Band Structure Local Extrema for {self.project_name} ({self.scf.crystal_type})")
+            plt.xlabel("K-point Index")
+            plt.ylabel("Energy (eV)")
+            plt.legend()
+            plt.grid()
+            plt.tight_layout()
+        else:
+            print("gen:info no NSCF data available to plot.")
+
+        plt.figure(figsize=(10, 6))
+        # plot DOS
+        if self.dos:
+            plt.plot(self.dos.eneriges, self.dos.dos, color="purple", marker='x', linestyle='None', label="DOS")
+            plt.plot(self.dos.eneriges, self.dos.dos, color="black", alpha=0.5)
+            plt.axvline(x=self.scf.vbm, color="blue", linestyle="--", label="VBM")
+            plt.axvline(x=self.scf.cbm, color="red", linestyle="--", label="CBM")
+            plt.axvline(x=self.scf.E_F, color="green", linestyle="--", label="Fermi Level")
+            plt.title(f"Density of States for {self.project_name} ({self.scf.crystal_type})")
+            plt.xlabel("Energy (eV)")
+            plt.ylabel("Density of States (states/eV)")
+            plt.legend()
+            plt.grid()
+            plt.tight_layout()
+        else:
+            print("gen:info no DOS data available to plot.")
+
+        plt.show()
 
     def save(self):
         output_file = os.path.join(self.project_dir, "processed.json")
@@ -736,5 +894,8 @@ class Compound:
             json.dump(self.present(), f, indent=4, default =lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
         print(f"process:info: compound data saved to {output_file}")
 
+compound = Compound()
+print(json.dumps(compound.present(), indent=4))
+compound.plot_min_max_local()
 
-Compound().save()
+# Compound().save()

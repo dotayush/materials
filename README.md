@@ -1,8 +1,8 @@
 # materials.
 
-"materials." is a small tool which generates the input files for Quantum Espresso.
-it also contains a script to post-process the results of the calculations (scf,
-nscf implemented so far) and extract useful information from them.
+"materials." is a srcipty tool that generates input files for Quantum Espresso.
+it also has scripts to post-process the results of the calculations (scf,
+nscf, dos) and extract useful information from them.
 
 ### running.
 
@@ -95,7 +95,7 @@ to run the calculations in parallel on multiple processors.
 build 7.4.1 (which i used) for exchange-functionals other than `pbe`.
 - certain exchange-functionals (eg. SCAN) require norm-conserving pseudopotentials to be used. i used
 `sg15_oncv_upf_2020-02-06.tar.gz SG15 ONCV potentials in UPF format` from [SG15 ONCV potentials](http://www.quantum-simulation.org/potentials/sg15_oncv/)
-for this purpose. you are still required to rename them and update your `.env` file if working with such
+for this purpose. you are still required to rename them just like the normal psuedos and update your `.env` file if working with such
 functionals.
 
 ### license.

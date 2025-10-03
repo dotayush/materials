@@ -234,11 +234,11 @@ def generate_espresso_input(
         "pseudo_dir": PSEUDOPOTENTIALS_DIR,
         "outdir": out_dir,
         "verbosity": "high", # this  is required to extract occupation numbers, else bandgap calculation fails
-        "tstress": True,
-        "tprnfor": True,
+        "tstress": True, # calculate stress tensor
+        "tprnfor": True, # calculate forces
     }
     system: QEInputType = {
-        "nbnd": nbnd or 32,
+        "nbnd": nbnd or 12,
         "nat": nat,
         "ecutwfc": 30,
         "ecutrho": 120,
@@ -256,6 +256,8 @@ def generate_espresso_input(
         system.update({"occupations": "fixed"})
     if xc:
         system.update({"input_dft": xc.upper()})  # set exchange-correlation functional
+        if xc.upper() in ["HSE", "HSE06"]:
+            system.update({"ecutwfc": 80, "ecutrho": 320, "nosym": True })  # increase cutoffs for hybrid
     else:
         system.update({"input_dft": "PBE"})
 
